@@ -23,5 +23,5 @@
 
 1.  Клонируйте репозиторий:
     ```bash
-    git clone https://github.com/YOUR_USERNAME/Пельмень.git
-    cd Пельмень
+    git clone https://github.com/factorxd/pelmen
+    cd pelmen

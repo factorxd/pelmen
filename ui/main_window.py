@@ -4,6 +4,7 @@ import json
 import tempfile
 import shutil
 import sys
+import locale
 import subprocess
 from collections import defaultdict
 
@@ -436,7 +437,8 @@ class MainWindow(QMainWindow):
             edit.stateChanged.connect(self.schedule_draft_save)
         elif field_type == "number":
             edit = QDoubleSpinBox()
-            edit.setRange(-999999, 999999)  # Задай нужный тебе диапазон
+            edit.setRange(-9999999.99, 9999999.99)
+            edit.setDecimals(2)
             edit.valueChanged.connect(self.schedule_draft_save)
             edit.textChanged.connect(self.schedule_draft_save)
         else:
@@ -497,9 +499,10 @@ class MainWindow(QMainWindow):
                 edit = QCheckBox()
                 edit.stateChanged.connect(self.schedule_draft_save)
             elif field_type == "number":
-                edit = QLineEdit()
-                from PySide6.QtGui import QDoubleValidator
-                edit.setValidator(QDoubleValidator())
+                edit = QDoubleSpinBox()
+                edit.setRange(-9999999.99, 9999999.99)
+                edit.setDecimals(2)
+                edit.valueChanged.connect(self.schedule_draft_save)
                 edit.textChanged.connect(self.schedule_draft_save)
             else:  # text
                 edit = QLineEdit()
@@ -535,30 +538,91 @@ class MainWindow(QMainWindow):
 
     def collect_data(self):
         data = {}
-        # Простые поля
+
+        # ---- Русские названия месяцев ----
+        months_full = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                       'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+        months_short = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн',
+                        'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+
+        def format_date(qdate, fmt):
+            if not fmt:
+                return qdate.toString("dd.MM.yyyy")
+            from datetime import datetime
+            dt = datetime(qdate.year(), qdate.month(), qdate.day())
+            # Если формат содержит русские месяцы, обработаем вручную
+            if '%B' in fmt or '%b' in fmt:
+                result = fmt.replace('%B', months_full[dt.month - 1]).replace('%b', months_short[dt.month - 1])
+                # Остальные директивы обработаем через strftime с локалью 'C' (английские цифры)
+                import locale
+                locale.setlocale(locale.LC_TIME, 'C')
+                # Заменяем %B и %b на заглушки, чтобы strftime не трогала
+                temp = result.replace(months_full[dt.month - 1], 'MONTH_FULL').replace(months_short[dt.month - 1],
+                                                                                       'MONTH_SHORT')
+                temp = dt.strftime(temp)
+                temp = temp.replace('MONTH_FULL', months_full[dt.month - 1]).replace('MONTH_SHORT',
+                                                                                     months_short[dt.month - 1])
+                return temp
+            else:
+                # Цифровой формат или только латиница
+                try:
+                    return dt.strftime(fmt)
+                except:
+                    return qdate.toString("dd.MM.yyyy")
+
+        # ---- Сбор простых полей ----
         for name, widget in self.simple_widgets.items():
+            key = f"field:{name}"
+            info = self.display_names.get(self.current_template.id, {}).get(key, {})
+            field_type = info.get("type", "text")
+            fmt = info.get("format", "")
+            val = None
             if isinstance(widget, QLineEdit):
-                data[name] = widget.text()
+                val = widget.text()
             elif isinstance(widget, QDateEdit):
-                data[name] = widget.date().toString("yyyy-MM-dd")
+                val = format_date(widget.date(), fmt)
             elif isinstance(widget, QCheckBox):
-                data[name] = widget.isChecked()
+                val = widget.isChecked()
             elif isinstance(widget, QDoubleSpinBox):
-                data[name] = widget.value()  # число
-        # Блоки
+                val = widget.value()
+                if fmt and field_type == "number":
+                    try:
+                        val = fmt.format(val)
+                        # Преобразуем 1,234.56 → 1 234,56 для русской нотации
+                        if ',' in fmt and '.' in fmt:
+                            val = val.replace(',', ' ').replace('.', ',')
+                    except:
+                        pass
+            data[name] = val
+
+        # ---- Блоки ----
         for block_name, cards in self.block_widgets.items():
             block_data = []
             for card in cards:
                 item = {}
                 for fname, fw in card["fields"].items():
+                    key = f"block_field:{block_name}.{fname}"
+                    info = self.display_names.get(self.current_template.id, {}).get(key, {})
+                    field_type = info.get("type", "text")
+                    fmt = info.get("format", "")
+                    val = None
                     if isinstance(fw, QLineEdit):
-                        item[fname] = fw.text()
+                        val = fw.text()
                     elif isinstance(fw, QDateEdit):
-                        item[fname] = fw.date().toString("yyyy-MM-dd")
+                        val = format_date(fw.date(), fmt)
                     elif isinstance(fw, QCheckBox):
-                        item[fname] = fw.isChecked()
-                    elif isinstance(fw, QDoubleSpinBox):
-                        item[fname] = fw.value()
+                        val = fw.isChecked()
+                    elif isinstance(widget, QDoubleSpinBox):
+                        val = widget.value()
+                        if fmt and field_type == "number":
+                            try:
+                                val = fmt.format(val)
+                                # Преобразуем 1,234.56 → 1 234,56 для русской нотации
+                                if ',' in fmt and '.' in fmt:
+                                    val = val.replace(',', ' ').replace('.', ',')
+                            except:
+                                pass
+                    item[fname] = val
                 block_data.append(item)
             data[block_name] = block_data
         return data

@@ -16,7 +16,7 @@ class SettingsDialog(QDialog):
         self.tid = template.id
 
         self.setWindowTitle("Настройка шаблона")
-        self.setMinimumSize(900, 650)
+        self.setMinimumSize(950, 700)
         self.init_ui()
 
     def init_ui(self):
@@ -24,19 +24,19 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         layout.addWidget(tabs)
 
-        # --- Вкладка 1: Отображаемые имена и типы полей ---
+        # Вкладка 1: Отображаемые имена, типы и форматы
         tab_names = QWidget()
         names_layout = QVBoxLayout(tab_names)
         names_layout.addWidget(QLabel("Двойной клик по ячейке для редактирования отображаемого имени.\n"
-                                      "Тип поля выбирается из выпадающего списка."))
+                                      "Тип поля и формат выбираются из списков."))
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Поле / блок (техническое имя)", "Отображаемое имя", "Тип поля"])
+        self.tree.setHeaderLabels(["Поле / блок", "Отображаемое имя", "Тип", "Формат"])
         self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
         self.tree.setEditTriggers(QTreeWidget.DoubleClicked | QTreeWidget.EditKeyPressed)
         names_layout.addWidget(self.tree)
-        tabs.addTab(tab_names, "Отображаемые имена и типы")
+        tabs.addTab(tab_names, "Имена, типы и форматы")
 
-        # --- Вкладка 2: Категории ---
+        # Вкладка 2: Категории (без изменений)
         tab_cats = QWidget()
         cats_layout = QVBoxLayout(tab_cats)
         panel = QWidget()
@@ -70,7 +70,7 @@ class SettingsDialog(QDialog):
         self.load_tree()
         self.load_items()
 
-        # Сигналы
+        # Сигналы категорий
         add_btn.clicked.connect(self.add_category)
         del_btn.clicked.connect(self.delete_category)
         rename_btn.clicked.connect(self.rename_category)
@@ -95,25 +95,24 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     # ---------- Вспомогательные методы ----------
-    def get_stored_display(self, key):
+    def get_stored(self, key, subkey):
         data = self.display_names.get(self.tid, {}).get(key)
-        if isinstance(data, str):
-            return data
         if isinstance(data, dict):
-            return data.get("display", "")
+            return data.get(subkey, "")
         return ""
+
+    def get_stored_display(self, key):
+        return self.get_stored(key, "display")
 
     def get_stored_type(self, key):
-        data = self.display_names.get(self.tid, {}).get(key)
-        if isinstance(data, dict):
-            return data.get("type", "text")
-        return "text"
+        t = self.get_stored(key, "type")
+        return t if t in ("text", "number", "date", "bool") else "text"
+
+    def get_stored_format(self, key):
+        return self.get_stored(key, "format")
 
     def get_stored_category(self, key):
-        data = self.display_names.get(self.tid, {}).get(key)
-        if isinstance(data, dict):
-            return data.get("category", "")
-        return ""
+        return self.get_stored(key, "category")
 
     def load_tree(self):
         self.tree.clear()
@@ -121,18 +120,21 @@ class SettingsDialog(QDialog):
         for field in self.template.fields:
             key = f"field:{field.name}"
             display = self.get_stored_display(key) or field.name
-            field_type = self.get_stored_type(key) or "text"
+            field_type = self.get_stored_type(key)
+            field_format = self.get_stored_format(key)
             item = QTreeWidgetItem(self.tree)
             item.setText(0, field.name)
             item.setText(1, display)
             item.setData(0, Qt.UserRole, key)
-            # Делаем вторую колонку редактируемой
             item.setFlags(item.flags() | Qt.ItemIsEditable)
-            # Комбобокс для типа
-            combo = QComboBox()
-            combo.addItems(["text", "number", "date", "bool"])
-            combo.setCurrentText(field_type)
-            self.tree.setItemWidget(item, 2, combo)
+            # Тип
+            type_combo = QComboBox()
+            type_combo.addItems(["text", "number", "date", "bool"])
+            type_combo.setCurrentText(field_type)
+            type_combo.currentTextChanged.connect(lambda t, it=item: self.update_format_combo(it, t))
+            self.tree.setItemWidget(item, 2, type_combo)
+            # Формат
+            self.add_format_widget(item, field_type, field_format)
         # Блоки и их поля
         for block in self.template.blocks:
             key_block = f"block:{block.name}"
@@ -142,10 +144,11 @@ class SettingsDialog(QDialog):
             block_item.setText(1, display_block)
             block_item.setData(0, Qt.UserRole, key_block)
             block_item.setFlags(block_item.flags() & ~Qt.ItemIsEditable)
-            combo_block = QComboBox()
-            combo_block.addItems(["text", "number", "date", "bool"])
-            combo_block.setCurrentText(self.get_stored_type(key_block))
-            self.tree.setItemWidget(block_item, 2, combo_block)
+            type_combo_block = QComboBox()
+            type_combo_block.addItems(["text", "number", "date", "bool"])
+            type_combo_block.setCurrentText(self.get_stored_type(key_block))
+            self.tree.setItemWidget(block_item, 2, type_combo_block)
+            self.add_format_widget(block_item, self.get_stored_type(key_block), self.get_stored_format(key_block))
             for field in block.fields:
                 key_field = f"block_field:{block.name}.{field.name}"
                 display_field = self.get_stored_display(key_field) or field.name
@@ -153,20 +156,87 @@ class SettingsDialog(QDialog):
                 child.setText(0, f"    {field.name}")
                 child.setText(1, display_field)
                 child.setData(0, Qt.UserRole, key_field)
-                child.setFlags(child.flags() & ~Qt.ItemIsEditable)
-                combo_field = QComboBox()
-                combo_field.addItems(["text", "number", "date", "bool"])
-                combo_field.setCurrentText(self.get_stored_type(key_field))
-                self.tree.setItemWidget(child, 2, combo_field)
-        self.tree.expandAll()
-        # Разрешаем редактирование второй колонки для всех элементов
-        for i in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(i)
-            item.setFlags(item.flags() | Qt.ItemIsEditable)
-            for j in range(item.childCount()):
-                child = item.child(j)
                 child.setFlags(child.flags() | Qt.ItemIsEditable)
+                type_combo = QComboBox()
+                type_combo.addItems(["text", "number", "date", "bool"])
+                type_combo.setCurrentText(self.get_stored_type(key_field))
+                type_combo.currentTextChanged.connect(lambda t, it=child: self.update_format_combo(it, t))
+                self.tree.setItemWidget(child, 2, type_combo)
+                self.add_format_widget(child, self.get_stored_type(key_field), self.get_stored_format(key_field))
+        self.tree.expandAll()
 
+    def add_format_widget(self, item, field_type, current_format):
+        combo = QComboBox()
+        if field_type == "date":
+            presets = [
+                ("DD.MM.YYYY", "%d.%m.%Y"),
+                ("DD Month YYYY (рус)", "%d %B %Y"),
+                ("DD Mon YYYY (рус)", "%d %b %Y"),
+                ("YYYY-MM-DD", "%Y-%m-%d"),
+                ("MM/DD/YYYY", "%m/%d/%Y"),
+                ("Свой формат...", "custom")
+            ]
+        elif field_type == "number":
+            if field_type == "number":
+                presets = [
+                    ("1234", "{}"),
+                    ("1 234", "{:,.0f}"),
+                    ("1,234", "{:,}"),
+                    ("1 234,5", "{:,.1f}"),
+                    ("1 234,56", "{:,.2f}"),
+                    ("1 234,56 руб.", "{:,.2f} руб."),
+                    ("1 234,5 руб.", "{:,.1f} руб."),
+                    ("1 234 руб.", "{:,.0f} руб."),
+                    ("Свой формат...", "custom")
+                ]
+        else:
+            self.tree.setItemWidget(item, 3, None)
+            return
+
+        for label, fmt in presets:
+            combo.addItem(label, fmt)
+        if current_format:
+            idx = combo.findData(current_format)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                combo.setCurrentText("Свой формат...")
+                combo.setItemData(combo.count()-1, current_format)
+        combo.currentIndexChanged.connect(lambda idx, it=item, cb=combo: self.on_format_changed(it, cb))
+        self.tree.setItemWidget(item, 3, combo)
+
+    def update_format_combo(self, item, new_type):
+        self.add_format_widget(item, new_type, "")
+
+    def on_format_changed(self, item, combo):
+        # Получаем ключ элемента дерева, чтобы определить тип поля
+        key = item.data(0, Qt.UserRole)
+        field_type = self.get_stored_type(key) if key else "text"
+
+        if combo.currentData() == "custom":
+            if field_type == "date":
+                hint = "Введите строку форматирования для даты\nПримеры: %d.%m.%Y, %d %B %Y"
+            else:
+                hint = "Введите строку форматирования для числа\nПримеры: {:.2f}, {:,.2f} ₽, {:.0f}"
+            custom, ok = QInputDialog.getText(self, "Свой формат", hint)
+            if ok and custom.strip():
+                combo.setItemData(combo.currentIndex(), custom)
+                combo.setItemText(combo.currentIndex(), custom[:25] + "..." if len(custom) > 25 else custom)
+            else:
+                combo.setCurrentIndex(0)
+        else:
+            # Дополнительная проверка для дат с русскими названиями месяцев (только если формат не "custom")
+            fmt = combo.currentData()
+            if field_type == "date" and fmt and isinstance(fmt, str) and ('%B' in fmt or '%b' in fmt):
+                import locale
+                try:
+                    locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
+                except:
+                    QMessageBox.warning(self, "Предупреждение",
+                                        "Выбран формат даты с названием месяца, но русская локаль не установлена.\n"
+                                        "Названия месяцев могут не отображаться. Рекомендуется использовать цифровой формат.")
+
+    # ---------- Категории (без изменений) ----------
     def load_categories(self):
         order = self.display_names.get(self.tid, {}).get("_categories_order", ["Без категории"])
         if "Без категории" not in order:
@@ -206,7 +276,6 @@ class SettingsDialog(QDialog):
             new_text = f"{display_part} : {cat if cat else 'Без категории'}"
             self.items_list.item(i).setText(new_text)
 
-    # ---------- Обработчики категорий ----------
     def add_category(self):
         name, ok = QInputDialog.getText(self, "Новая категория", "Название:")
         if ok and name.strip():
@@ -276,33 +345,25 @@ class SettingsDialog(QDialog):
         dlg_layout.addWidget(btns)
         if dlg.exec() == QDialog.Accepted:
             new_cat = combo.currentText()
-            # Гарантируем, что запись для self.tid существует
-            if self.tid not in self.display_names:
-                self.display_names[self.tid] = {}
-            existing = self.display_names[self.tid].get(key, {})
+            existing = self.display_names.get(self.tid, {}).get(key, {})
             if isinstance(existing, str):
                 existing = {"display": existing, "category": new_cat, "type": "text"}
-            elif isinstance(existing, dict):
-                existing["category"] = new_cat
-            else:
-                existing = {"display": "", "category": new_cat, "type": "text"}
-            self.display_names[self.tid][key] = existing
-            # Если это блок, применить ко всем полям
+            elif not isinstance(existing, dict):
+                existing = {}
+            existing["category"] = new_cat
+            self.display_names.setdefault(self.tid, {})[key] = existing
             if key.startswith("block:") and not key.startswith("block_field:"):
                 block_name = key.split(":", 1)[1]
                 for field in self.template.blocks:
                     if field.name == block_name:
                         for subfield in field.fields:
                             subkey = f"block_field:{block_name}.{subfield.name}"
-                            if self.tid not in self.display_names:
-                                self.display_names[self.tid] = {}
-                            sub_existing = self.display_names[self.tid].get(subkey, {})
+                            sub_existing = self.display_names.get(self.tid, {}).get(subkey, {})
                             if isinstance(sub_existing, str):
                                 sub_existing = {"display": sub_existing, "category": new_cat, "type": "text"}
-                            elif isinstance(sub_existing, dict):
-                                sub_existing["category"] = new_cat
-                            else:
-                                sub_existing = {"display": "", "category": new_cat, "type": "text"}
+                            elif not isinstance(sub_existing, dict):
+                                sub_existing = {}
+                            sub_existing["category"] = new_cat
                             self.display_names[self.tid][subkey] = sub_existing
             self.refresh_items()
 
@@ -332,28 +393,40 @@ class SettingsDialog(QDialog):
 
     # ---------- Сохранение ----------
     def accept(self):
-        # Сохраняем отображаемые имена и типы из дерева
+        # Сохраняем отображаемые имена, типы, форматы
         def save_tree_item(item):
             key = item.data(0, Qt.UserRole)
-            if key:
-                display = item.text(1).strip()
-                combo = self.tree.itemWidget(item, 2)
-                field_type = combo.currentText() if combo else "text"
-                if display:
-                    # Убедимся, что запись для self.tid существует
-                    if self.tid not in self.display_names:
-                        self.display_names[self.tid] = {}
-                    existing = self.display_names[self.tid].get(key, {})
-                    if isinstance(existing, str):
-                        existing = {"display": existing, "category": "", "type": field_type}
-                    elif not isinstance(existing, dict):
-                        existing = {"display": "", "category": "", "type": field_type}
-                    existing["display"] = display
-                    existing["type"] = field_type
-                    self.display_names[self.tid][key] = existing
+            if not key:
+                return
+            display = item.text(1).strip()
+            type_widget = self.tree.itemWidget(item, 2)
+            field_type = type_widget.currentText() if type_widget else "text"
+            format_widget = self.tree.itemWidget(item, 3)
+            field_format = ""
+            if format_widget and isinstance(format_widget, QComboBox):
+                fmt_data = format_widget.currentData()
+                if fmt_data != "custom":
+                    field_format = fmt_data
                 else:
-                    if self.tid in self.display_names and key in self.display_names[self.tid]:
-                        del self.display_names[self.tid][key]
+                    field_format = format_widget.currentData()
+            existing = self.display_names.get(self.tid, {}).get(key, {})
+            if isinstance(existing, str):
+                existing = {"display": existing}
+            elif not isinstance(existing, dict):
+                existing = {}
+            if display:
+                existing["display"] = display
+            else:
+                existing.pop("display", None)
+            existing["type"] = field_type
+            if field_type in ("date", "number") and field_format:
+                existing["format"] = field_format
+            else:
+                existing.pop("format", None)
+            if existing:
+                self.display_names.setdefault(self.tid, {})[key] = existing
+            else:
+                self.display_names[self.tid].pop(key, None)
             for i in range(item.childCount()):
                 save_tree_item(item.child(i))
 
@@ -362,9 +435,7 @@ class SettingsDialog(QDialog):
 
         # Сохраняем порядок категорий
         order = [self.cat_list.item(i).text() for i in range(self.cat_list.count())]
-        if self.tid not in self.display_names:
-            self.display_names[self.tid] = {}
-        self.display_names[self.tid]["_categories_order"] = order
+        self.display_names.setdefault(self.tid, {})["_categories_order"] = order
 
         self.save_callback(self.display_names)
         super().accept()
