@@ -12,7 +12,7 @@
 
 ## 🚀 Быстрый старт (для пользователей)
 
-1.  Скачайте последнюю версию из раздела [Releases](https://github.com/factorx/pelmen/releases).
+1.  Скачайте последнюю версию из раздела [Releases](https://github.com/factorxd/pelmen/releases).
 2.  Распакуйте архив в любую папку.
 3.  Запустите файл `Пельмень.exe`.
 4.  При первом запуске укажите папку с вашими шаблонами `.docx`.
@@ -24,4 +24,4 @@
 1.  Клонируйте репозиторий:
     ```bash
     git clone https://github.com/factorxd/pelmen.git
-    cd Пельмень
+    cd pelmen
