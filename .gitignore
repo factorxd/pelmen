@@ -1,0 +1,18 @@
+# Виртуальное окружение и IDE
+venv/
+.venv/
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+
+# Файлы, создаваемые программой во время работы
+data/settings.json
+data/display_names.json
+data/drafts/*
+data/temp_preview/*
+
+# Папки и файлы сборки PyInstaller
+build/
+dist/
+*.spec
