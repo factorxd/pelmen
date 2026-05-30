@@ -4,24 +4,20 @@ import json
 import tempfile
 import shutil
 import sys
-import locale
-import subprocess
-from collections import defaultdict
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QTreeView, QFileDialog, QMessageBox, QMenuBar, QMenu,
+    QTreeView, QFileDialog, QMessageBox,
     QFileSystemModel, QScrollArea, QLineEdit, QPushButton, QLabel,
-    QDateEdit, QFrame, QGroupBox, QDialog, QFormLayout, QDialogButtonBox,
+    QDateEdit, QFrame, QGroupBox, QDialog,
     QTabWidget, QCheckBox, QDoubleSpinBox, QTextEdit
 )
-from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtCore import Qt, QDir, QDate
-from PySide6.QtGui import QAction, QKeySequence, QIcon
-from PySide6.QtWidgets import QApplication, QToolBar, QStatusBar, QStyle
+from PySide6.QtGui import QAction, QIcon
+from PySide6.QtWidgets import QApplication
 
 from logic.template_parser import parse_docx_template
-from logic.data_models import Template, TemplateField, TemplateBlock
+from logic.data_models import Template
 from logic.doc_generator import generate_docx
 
 from ui.helper_dialog import HelperDialog
@@ -539,7 +535,7 @@ class MainWindow(QMainWindow):
     def collect_data(self):
         data = {}
 
-        # ---- Русские названия месяцев ----
+        # ---- Русские названия месяцев (для форматирования дат) ----
         months_full = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
                        'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
         months_short = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн',
@@ -550,13 +546,10 @@ class MainWindow(QMainWindow):
                 return qdate.toString("dd.MM.yyyy")
             from datetime import datetime
             dt = datetime(qdate.year(), qdate.month(), qdate.day())
-            # Если формат содержит русские месяцы, обработаем вручную
             if '%B' in fmt or '%b' in fmt:
                 result = fmt.replace('%B', months_full[dt.month - 1]).replace('%b', months_short[dt.month - 1])
-                # Остальные директивы обработаем через strftime с локалью 'C' (английские цифры)
                 import locale
                 locale.setlocale(locale.LC_TIME, 'C')
-                # Заменяем %B и %b на заглушки, чтобы strftime не трогала
                 temp = result.replace(months_full[dt.month - 1], 'MONTH_FULL').replace(months_short[dt.month - 1],
                                                                                        'MONTH_SHORT')
                 temp = dt.strftime(temp)
@@ -564,11 +557,71 @@ class MainWindow(QMainWindow):
                                                                                      months_short[dt.month - 1])
                 return temp
             else:
-                # Цифровой формат или только латиница
                 try:
                     return dt.strftime(fmt)
                 except:
                     return qdate.toString("dd.MM.yyyy")
+
+        # ---- Сбор простых полей ----
+        for name, widget in self.simple_widgets.items():
+            key = f"field:{name}"
+            info = self.display_names.get(self.current_template.id, {}).get(key, {})
+            field_type = info.get("type", "text")
+            fmt = info.get("format", "")
+            val = None
+
+            if isinstance(widget, QLineEdit):
+                val = widget.text()
+            elif isinstance(widget, QDateEdit):
+                val = format_date(widget.date(), fmt)
+            elif isinstance(widget, QCheckBox):
+                val = widget.isChecked()
+            elif isinstance(widget, QDoubleSpinBox):
+                val = widget.value()
+                # Применяем формат для чисел, если он задан
+                if fmt and field_type == "number":
+                    try:
+                        val = fmt.format(val)
+                    except:
+                        pass
+            else:
+                val = None
+
+            data[name] = val
+
+        # ---- Сбор полей внутри блоков (списки) ----
+        for block_name, cards in self.block_widgets.items():
+            block_data = []
+            for card in cards:
+                item = {}
+                for fname, fw in card["fields"].items():
+                    key = f"block_field:{block_name}.{fname}"
+                    info = self.display_names.get(self.current_template.id, {}).get(key, {})
+                    field_type = info.get("type", "text")
+                    fmt = info.get("format", "")
+                    val = None
+
+                    if isinstance(fw, QLineEdit):
+                        val = fw.text()
+                    elif isinstance(fw, QDateEdit):
+                        val = format_date(fw.date(), fmt)
+                    elif isinstance(fw, QCheckBox):
+                        val = fw.isChecked()
+                    elif isinstance(fw, QDoubleSpinBox):
+                        val = fw.value()
+                        if fmt and field_type == "number":
+                            try:
+                                val = fmt.format(val)
+                            except:
+                                pass
+                    else:
+                        val = None
+
+                    item[fname] = val
+                block_data.append(item)
+            data[block_name] = block_data
+
+        return data
 
         # ---- Сбор простых полей ----
         for name, widget in self.simple_widgets.items():

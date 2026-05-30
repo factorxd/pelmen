@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QPushButton, QMessageBox, QHeaderView, QComboBox, QCheckBox, QLabel
 )
 from PySide6.QtCore import Qt
-from logic.data_models import Template, TemplateField, TemplateBlock
+from logic.data_models import Template
 
 
 class TemplateEditorDialog(QDialog):

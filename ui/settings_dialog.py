@@ -143,7 +143,7 @@ class SettingsDialog(QDialog):
             block_item.setText(0, f"[Блок] {block.name}")
             block_item.setText(1, display_block)
             block_item.setData(0, Qt.UserRole, key_block)
-            block_item.setFlags(block_item.flags() & ~Qt.ItemIsEditable)
+            block_item.setFlags(block_item.flags() | Qt.ItemIsEditable)
             type_combo_block = QComboBox()
             type_combo_block.addItems(["text", "number", "date", "bool"])
             type_combo_block.setCurrentText(self.get_stored_type(key_block))
