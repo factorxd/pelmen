@@ -1,5 +1,4 @@
 from docxtpl import DocxTemplate
-import os
 
 def generate_docx(template_path, data_dict, output_path):
     """

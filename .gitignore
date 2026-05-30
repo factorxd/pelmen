@@ -16,3 +16,5 @@ data/temp_preview/*
 build/
 dist/
 *.spec
+
+*.exe

@@ -1,6 +1,5 @@
 # ui/mass_generate_dialog.py
 import os
-import json
 import tempfile
 import zipfile
 import pandas as pd
@@ -9,7 +8,6 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QLabel, QProgressBar, QMessageBox, QGroupBox, QFormLayout
 )
-from PySide6.QtCore import Qt
 from logic.doc_generator import generate_docx
 
 class MassGenerateDialog(QDialog):

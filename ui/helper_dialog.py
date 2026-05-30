@@ -2,8 +2,8 @@
 import re
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTabWidget, QWidget, QFormLayout,
-    QLineEdit, QPushButton, QListWidget, QHBoxLayout, QLabel,
-    QListWidgetItem, QMessageBox, QComboBox, QTextEdit, QCheckBox
+    QLineEdit, QPushButton, QListWidget, QHBoxLayout,
+    QMessageBox, QTextEdit, QCheckBox
 )
 from utils.clipboard import copy_to_clipboard
 
