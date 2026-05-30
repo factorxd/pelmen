@@ -15,7 +15,7 @@ class MassGenerateDialog(QDialog):
         super().__init__(parent)
         self.template = template
         self.setWindowTitle(f"Массовая генерация: {template.name}")
-        self.setMinimumSize(800, 600)
+        self.setSizeGripEnabled(True)
         self.df = None
         self.columns = []
         self.field_mapping = {}   # колонка -> имя поля

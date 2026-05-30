@@ -16,7 +16,7 @@ class SettingsDialog(QDialog):
         self.tid = template.id
 
         self.setWindowTitle("Настройка шаблона")
-        self.setMinimumSize(950, 700)
+        self.setSizeGripEnabled(True)
         self.init_ui()
 
     def init_ui(self):

@@ -12,8 +12,7 @@ class HelperDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Помощник разметки")
-        self.setMinimumWidth(550)
-        self.setMinimumHeight(500)
+        self.setSizeGripEnabled(True)
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QTreeView, QFileDialog, QMessageBox, QFileSystemModel,
     QScrollArea, QLineEdit, QPushButton, QLabel, QDateEdit,
     QFrame, QGroupBox, QDialog, QTabWidget, QCheckBox,
-    QDoubleSpinBox, QTextEdit, QApplication
+    QDoubleSpinBox, QTextEdit, QApplication, QMenu
 )
 from PySide6.QtCore import Qt, QDir, QDate, QSortFilterProxyModel, QTimer
 from PySide6.QtGui import QAction, QIcon, QPalette, QColor
@@ -23,6 +23,7 @@ from logic.doc_generator import generate_docx
 from ui.helper_dialog import HelperDialog
 from ui.settings_dialog import SettingsDialog
 from ui.mass_generate_dialog import MassGenerateDialog
+from ui.presets_dialog import PresetsDialog
 
 def resource_path(relative_path):
     try:
@@ -101,6 +102,8 @@ class MainWindow(QMainWindow):
         open_folder_action.triggered.connect(self.open_templates_folder)
         helper_action = file_menu.addAction("Помощник разметки")
         helper_action.triggered.connect(self.open_helper)
+        presets_action = file_menu.addAction("Пресеты")
+        presets_action.triggered.connect(self.open_presets)
         mass_btn = file_menu.addAction("Массовая генерация из CSV/Excel")
         mass_btn.triggered.connect(self.mass_generate)
         preview_action = file_menu.addAction("Предпросмотр документа")
@@ -327,11 +330,16 @@ class MainWindow(QMainWindow):
     def open_display_settings(self):
         if not self.current_template:
             return
+        w, h = self.get_dialog_size("settings_dialog", 900, 650)
+
         def save_settings(display_names):
             self.display_names = display_names
             self.save_display_names()
             self.build_form()
+
         dialog = SettingsDialog(self.current_template, self.display_names, save_settings, self)
+        dialog.resize(w, h)
+        dialog.finished.connect(lambda: self.save_dialog_size("settings_dialog", dialog.size()))
         dialog.exec()
 
     def build_form(self):
@@ -349,7 +357,7 @@ class MainWindow(QMainWindow):
             return
 
         top_btn_layout = QHBoxLayout()
-        settings_btn = QPushButton("⚙️ Настроить отображаемые имена и категории")
+        settings_btn = QPushButton("⚙️ Настройки шаблона")
         settings_btn.clicked.connect(self.open_display_settings)
         top_btn_layout.addWidget(settings_btn)
         top_btn_layout.addStretch()
@@ -448,6 +456,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(edit)
         self.simple_widgets[field.name] = edit
 
+        edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        edit.customContextMenuRequested.connect(lambda pos, w=edit: self.show_preset_menu_for_widget(w, pos))
+
     def add_dynamic_block(self, layout, block, block_display_name, category=None):
         group_box = QGroupBox(block_display_name)
         group_layout = QVBoxLayout(group_box)
@@ -504,6 +515,9 @@ class MainWindow(QMainWindow):
             else:
                 edit = QLineEdit()
                 edit.textChanged.connect(self.schedule_draft_save)
+
+            edit.setContextMenuPolicy(Qt.CustomContextMenu)
+            edit.customContextMenuRequested.connect(lambda p, w=edit: self.show_preset_menu_for_widget(w, p))
 
             card_layout.addWidget(field_label)
             card_layout.addWidget(edit)
@@ -668,7 +682,10 @@ class MainWindow(QMainWindow):
         if not self.current_template:
             QMessageBox.warning(self, "Нет шаблона", "Сначала выберите шаблон в дереве.")
             return
+        w, h = self.get_dialog_size("mass_generate_dialog", 800, 600)
         dialog = MassGenerateDialog(self.current_template, self)
+        dialog.resize(w, h)
+        dialog.finished.connect(lambda: self.save_dialog_size("mass_generate_dialog", dialog.size()))
         dialog.exec()
 
     def preview_document(self):
@@ -850,6 +867,13 @@ class MainWindow(QMainWindow):
             app.setStyleSheet("")
         app.setStyle('Fusion')
 
+    def open_presets(self):
+        w, h = self.get_dialog_size("presets_dialog", 600, 450)
+        dialog = PresetsDialog(self)
+        dialog.resize(w, h)
+        dialog.finished.connect(lambda: self.save_dialog_size("presets_dialog", dialog.size()))
+        dialog.exec()
+
     def filter_tree(self, text):
         self.proxy_model.setFilterWildcard(text)
         # Принудительно обновляем корень дерева, чтобы после очистки не улететь на диск C:
@@ -858,13 +882,17 @@ class MainWindow(QMainWindow):
             self.tree_view.setRootIndex(self.proxy_model.mapFromSource(root_index))
 
     def open_helper(self):
+        w, h = self.get_dialog_size("helper_dialog", 550, 500)
         dialog = HelperDialog(self)
+        dialog.resize(w, h)
+        dialog.finished.connect(lambda: self.save_dialog_size("helper_dialog", dialog.size()))
         dialog.exec()
 
     def _show_html_dialog(self, title, html):
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setMinimumSize(750, 550)
+        dialog.setSizeGripEnabled(True)
         layout = QVBoxLayout(dialog)
         text_edit = QTextEdit()
         text_edit.setHtml(html)
@@ -967,3 +995,108 @@ class MainWindow(QMainWindow):
         </html>
         """
         self._show_html_dialog("О программе", about_html)
+
+    def get_presets_data(self):
+        presets_file = os.path.join(self.data_dir, "presets.json")
+        if not os.path.exists(presets_file):
+            return {}
+        with open(presets_file, "r", encoding="utf-8") as f:
+            presets = json.load(f)  # список {"name":..., "value":..., "category":...}
+        result = {}
+        for p in presets:
+            cat = p.get("category", "") or "Без категории"
+            if cat not in result:
+                result[cat] = []
+            result[cat].append((p["name"], p["value"]))
+        return result
+
+    def get_presets_menu(self, parent_widget):
+        menu = QMenu(parent_widget)
+        menu.setTitle("Вставить из пресетов")
+        presets_data = self.get_presets_data()
+        if not presets_data:
+            no_action = QAction("Нет сохранённых пресетов", menu)
+            no_action.setEnabled(False)
+            menu.addAction(no_action)
+            return menu
+        for category, items in sorted(presets_data.items()):
+            cat_menu = menu.addMenu(category)
+            for name, value in sorted(items, key=lambda x: x[0]):
+                action = QAction(name, cat_menu)
+                action.setData(value)  # храним значение
+                action.triggered.connect(lambda checked, v=value, w=parent_widget: self.insert_preset_value(w, v))
+                cat_menu.addAction(action)
+        return menu
+
+    def insert_preset_value(self, widget, value):
+        if isinstance(widget, QLineEdit):
+            widget.insert(value)
+        elif isinstance(widget, QTextEdit):
+            widget.insertPlainText(value)
+        elif isinstance(widget, QDoubleSpinBox):
+            try:
+                widget.setValue(float(value))
+            except:
+                pass
+        elif isinstance(widget, QDateEdit):
+            from PySide6.QtCore import QDate
+            # пробуем разные форматы
+            for fmt in ("dd.MM.yyyy", "yyyy-MM-dd", "dd/MM/yyyy"):
+                date = QDate.fromString(value, fmt)
+                if date.isValid():
+                    widget.setDate(date)
+                    break
+        # Для QCheckBox? Не нужно, там пресеты не нужны.
+
+    def show_preset_menu_for_widget(self, widget, pos):
+        menu = QMenu()
+        # Стандартные действия для виджета
+        if hasattr(widget, 'createStandardContextMenu'):
+            standard_menu = widget.createStandardContextMenu()
+            # Копируем действия из стандартного меню
+            for action in standard_menu.actions():
+                menu.addAction(action)
+        else:
+            # Если стандартного нет, добавим базовые для QLineEdit
+            if isinstance(widget, QLineEdit):
+                copy_action = QAction("Копировать", widget)
+                copy_action.triggered.connect(widget.copy)
+                paste_action = QAction("Вставить", widget)
+                paste_action.triggered.connect(widget.paste)
+                cut_action = QAction("Вырезать", widget)
+                cut_action.triggered.connect(widget.cut)
+                menu.addAction(cut_action)
+                menu.addAction(copy_action)
+                menu.addAction(paste_action)
+
+        menu.addSeparator()
+        # Подменю пресетов
+        presets_menu = self.get_presets_menu(widget)
+        # get_presets_menu возвращает QMenu с вложенными категориями
+        menu.addMenu(presets_menu)
+
+        menu.exec(widget.mapToGlobal(pos))
+
+    def get_dialog_size(self, dialog_name, default_width=800, default_height=600):
+        """Возвращает сохранённый размер диалога или значение по умолчанию"""
+        if os.path.exists(self.settings_file):
+            with open(self.settings_file, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+                sizes = settings.get("dialog_sizes", {})
+                size = sizes.get(dialog_name)
+                if size and len(size) == 2:
+                    return size[0], size[1]
+        return default_width, default_height
+
+    def save_dialog_size(self, dialog_name, size):
+        """Сохраняет размер диалога в settings.json"""
+        try:
+            with open(self.settings_file, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        except:
+            settings = {}
+        if "dialog_sizes" not in settings:
+            settings["dialog_sizes"] = {}
+        settings["dialog_sizes"][dialog_name] = [size.width(), size.height()]
+        with open(self.settings_file, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
