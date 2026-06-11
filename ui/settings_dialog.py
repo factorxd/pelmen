@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QTreeWidget, QTreeWidgetItem, QHeaderView, QPushButton,
     QInputDialog, QMessageBox, QFileDialog, QListWidget,
-    QListWidgetItem, QLabel, QDialogButtonBox, QComboBox
+    QListWidgetItem, QLabel, QDialogButtonBox, QComboBox, QLineEdit
 )
 from PySide6.QtCore import Qt
 
@@ -24,17 +24,17 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         layout.addWidget(tabs)
 
-        # Вкладка 1: Отображаемые имена, типы и форматы
+        # Вкладка 1: Имена, типы, форматы, суффиксы
         tab_names = QWidget()
         names_layout = QVBoxLayout(tab_names)
         names_layout.addWidget(QLabel("Двойной клик по ячейке для редактирования отображаемого имени.\n"
-                                      "Тип поля и формат выбираются из списков."))
+                                      "Тип поля, формат и суффикс настраиваются отдельно."))
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Поле / блок", "Отображаемое имя", "Тип", "Формат"])
         self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
         self.tree.setEditTriggers(QTreeWidget.DoubleClicked | QTreeWidget.EditKeyPressed)
         names_layout.addWidget(self.tree)
-        tabs.addTab(tab_names, "Имена, типы и форматы")
+        tabs.addTab(tab_names, "Имена, типы, форматы")
 
         # Вкладка 2: Категории (без изменений)
         tab_cats = QWidget()
@@ -106,7 +106,7 @@ class SettingsDialog(QDialog):
 
     def get_stored_type(self, key):
         t = self.get_stored(key, "type")
-        return t if t in ("text", "number", "date", "bool") else "text"
+        return t if t in ("text", "number", "date", "bool", "image") else "text"
 
     def get_stored_format(self, key):
         return self.get_stored(key, "format")
@@ -122,19 +122,23 @@ class SettingsDialog(QDialog):
             display = self.get_stored_display(key) or field.name
             field_type = self.get_stored_type(key)
             field_format = self.get_stored_format(key)
+
             item = QTreeWidgetItem(self.tree)
             item.setText(0, field.name)
             item.setText(1, display)
             item.setData(0, Qt.UserRole, key)
             item.setFlags(item.flags() | Qt.ItemIsEditable)
+
             # Тип
             type_combo = QComboBox()
-            type_combo.addItems(["text", "number", "date", "bool"])
+            type_combo.addItems(["text", "number", "date", "bool", "image"])
             type_combo.setCurrentText(field_type)
-            type_combo.currentTextChanged.connect(lambda t, it=item: self.update_format_combo(it, t))
+            type_combo.currentTextChanged.connect(lambda t, it=item: self.on_type_changed(it, t))
             self.tree.setItemWidget(item, 2, type_combo)
-            # Формат
+
+            # Формат (всегда комбобокс, но для не-date/number отключён)
             self.add_format_widget(item, field_type, field_format)
+
         # Блоки и их поля
         for block in self.template.blocks:
             key_block = f"block:{block.name}"
@@ -144,28 +148,44 @@ class SettingsDialog(QDialog):
             block_item.setText(1, display_block)
             block_item.setData(0, Qt.UserRole, key_block)
             block_item.setFlags(block_item.flags() | Qt.ItemIsEditable)
+
             type_combo_block = QComboBox()
             type_combo_block.addItems(["text", "number", "date", "bool"])
             type_combo_block.setCurrentText(self.get_stored_type(key_block))
             self.tree.setItemWidget(block_item, 2, type_combo_block)
             self.add_format_widget(block_item, self.get_stored_type(key_block), self.get_stored_format(key_block))
+
             for field in block.fields:
                 key_field = f"block_field:{block.name}.{field.name}"
                 display_field = self.get_stored_display(key_field) or field.name
+                field_type = self.get_stored_type(key_field)
+                field_format = self.get_stored_format(key_field)
+
                 child = QTreeWidgetItem(block_item)
                 child.setText(0, f"    {field.name}")
                 child.setText(1, display_field)
                 child.setData(0, Qt.UserRole, key_field)
                 child.setFlags(child.flags() | Qt.ItemIsEditable)
+
                 type_combo = QComboBox()
-                type_combo.addItems(["text", "number", "date", "bool"])
-                type_combo.setCurrentText(self.get_stored_type(key_field))
-                type_combo.currentTextChanged.connect(lambda t, it=child: self.update_format_combo(it, t))
+                type_combo.addItems(["text", "number", "date", "bool", "image"])
+                type_combo.setCurrentText(field_type)
+                type_combo.currentTextChanged.connect(lambda t, it=child: self.on_type_changed(it, t))
                 self.tree.setItemWidget(child, 2, type_combo)
-                self.add_format_widget(child, self.get_stored_type(key_field), self.get_stored_format(key_field))
+
+                self.add_format_widget(child, field_type, field_format)
+
         self.tree.expandAll()
 
+    def on_type_changed(self, item, new_type):
+        """При изменении типа поля обновляем виджеты формата и суффикса"""
+        key = item.data(0, Qt.UserRole)
+        old_type = self.get_stored_type(key)
+        # Обновляем формат
+        self.add_format_widget(item, new_type, "")
+
     def add_format_widget(self, item, field_type, current_format):
+        """Добавляет комбобокс формата в колонку 3 (индекс 3)"""
         combo = QComboBox()
         if field_type == "date":
             presets = [
@@ -176,43 +196,45 @@ class SettingsDialog(QDialog):
                 ("MM/DD/YYYY", "%m/%d/%Y"),
                 ("Свой формат...", "custom")
             ]
+            combo.addItems([p[0] for p in presets])
+            for label, fmt in presets:
+                combo.setItemData(combo.findText(label), fmt)
         elif field_type == "number":
-            if field_type == "number":
-                presets = [
-                    ("1234", "{}"),
-                    ("1 234", "{:,.0f}"),
-                    ("1,234", "{:,}"),
-                    ("1 234,5", "{:,.1f}"),
-                    ("1 234,56", "{:,.2f}"),
-                    ("1 234,56 руб.", "{:,.2f} руб."),
-                    ("1 234,5 руб.", "{:,.1f} руб."),
-                    ("1 234 руб.", "{:,.0f} руб."),
-                    ("Свой формат...", "custom")
-                ]
+            presets = [
+                ("1234", "{}"),
+                ("1 234", "{:,.0f}"),
+                ("1,234", "{:,}"),
+                ("1 234.5", "{:,.1f}"),
+                ("1 234.56", "{:,.2f}"),
+                ("Свой формат...", "custom")
+            ]
+            combo.addItems([p[0] for p in presets])
+            for label, fmt in presets:
+                combo.setItemData(combo.findText(label), fmt)
         else:
+            # Для других типов – скрываем или отключаем
             self.tree.setItemWidget(item, 3, None)
             return
 
-        for label, fmt in presets:
-            combo.addItem(label, fmt)
         if current_format:
-            idx = combo.findData(current_format)
+            # Ищем индекс по формату
+            idx = -1
+            for i in range(combo.count()):
+                if combo.itemData(i) == current_format:
+                    idx = i
+                    break
             if idx >= 0:
                 combo.setCurrentIndex(idx)
             else:
                 combo.setCurrentText("Свой формат...")
                 combo.setItemData(combo.count()-1, current_format)
+
         combo.currentIndexChanged.connect(lambda idx, it=item, cb=combo: self.on_format_changed(it, cb))
         self.tree.setItemWidget(item, 3, combo)
 
-    def update_format_combo(self, item, new_type):
-        self.add_format_widget(item, new_type, "")
-
     def on_format_changed(self, item, combo):
-        # Получаем ключ элемента дерева, чтобы определить тип поля
         key = item.data(0, Qt.UserRole)
         field_type = self.get_stored_type(key) if key else "text"
-
         if combo.currentData() == "custom":
             if field_type == "date":
                 hint = "Введите строку форматирования для даты\nПримеры: %d.%m.%Y, %d %B %Y"
@@ -225,7 +247,7 @@ class SettingsDialog(QDialog):
             else:
                 combo.setCurrentIndex(0)
         else:
-            # Дополнительная проверка для дат с русскими названиями месяцев (только если формат не "custom")
+            # Для дат с русскими месяцами – предупреждение
             fmt = combo.currentData()
             if field_type == "date" and fmt and isinstance(fmt, str) and ('%B' in fmt or '%b' in fmt):
                 import locale
@@ -393,7 +415,6 @@ class SettingsDialog(QDialog):
 
     # ---------- Сохранение ----------
     def accept(self):
-        # Сохраняем отображаемые имена, типы, форматы
         def save_tree_item(item):
             key = item.data(0, Qt.UserRole)
             if not key:
@@ -401,6 +422,8 @@ class SettingsDialog(QDialog):
             display = item.text(1).strip()
             type_widget = self.tree.itemWidget(item, 2)
             field_type = type_widget.currentText() if type_widget else "text"
+
+            # Формат – колонка 3
             format_widget = self.tree.itemWidget(item, 3)
             field_format = ""
             if format_widget and isinstance(format_widget, QComboBox):
@@ -409,6 +432,7 @@ class SettingsDialog(QDialog):
                     field_format = fmt_data
                 else:
                     field_format = format_widget.currentData()
+
             existing = self.display_names.get(self.tid, {}).get(key, {})
             if isinstance(existing, str):
                 existing = {"display": existing}
@@ -423,6 +447,7 @@ class SettingsDialog(QDialog):
                 existing["format"] = field_format
             else:
                 existing.pop("format", None)
+
             if existing:
                 self.display_names.setdefault(self.tid, {})[key] = existing
             else:

@@ -12,18 +12,12 @@ from PySide6.QtWidgets import (
     QTreeView, QFileDialog, QMessageBox, QFileSystemModel,
     QScrollArea, QLineEdit, QPushButton, QLabel, QDateEdit,
     QFrame, QGroupBox, QDialog, QTabWidget, QCheckBox,
-    QDoubleSpinBox, QTextEdit, QApplication, QMenu
+    QDoubleSpinBox, QTextEdit, QApplication, QMenu, QTextBrowser
 )
 from PySide6.QtCore import Qt, QDir, QDate, QSortFilterProxyModel, QTimer
 from PySide6.QtGui import QAction, QIcon, QPalette, QColor
 
-from logic.template_parser import parse_docx_template
-from logic.data_models import Template
-from logic.doc_generator import generate_docx
-from ui.helper_dialog import HelperDialog
-from ui.settings_dialog import SettingsDialog
-from ui.mass_generate_dialog import MassGenerateDialog
-from ui.presets_dialog import PresetsDialog
+from ui.form_builder import FormBuilder
 
 def resource_path(relative_path):
     try:
@@ -74,6 +68,8 @@ class MainWindow(QMainWindow):
         self.block_layouts = {}
         self.templates_cache = {}
 
+        self.form_builder = None
+
         self.light_palette = QApplication.instance().palette()
 
         self.load_display_names()
@@ -83,6 +79,8 @@ class MainWindow(QMainWindow):
             self.set_root_folder(self.root_folder)
         else:
             self.ask_for_folder()
+
+        QTimer.singleShot(2000, lambda: self.check_for_updates(manual=False))
 
         # Очистка временных файлов предпросмотра
         preview_temp_dir = os.path.join(self.data_dir, "temp_preview")
@@ -122,6 +120,8 @@ class MainWindow(QMainWindow):
         help_action.triggered.connect(self.show_help)
         about_action = help_menu.addAction("О программе")
         about_action.triggered.connect(self.show_about)
+        check_updates_action = help_menu.addAction("Проверить обновления")
+        check_updates_action.triggered.connect(self.manual_check_updates)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -313,11 +313,15 @@ class MainWindow(QMainWindow):
                 self.build_form()
                 return
             try:
+                from logic.template_parser import parse_docx_template
+                from logic.data_models import Template
+
                 fields, blocks = parse_docx_template(file_path)
                 name = os.path.splitext(os.path.basename(file_path))[0]
                 template = Template(file_path, name, file_path, fields, blocks)
                 self.templates_cache[file_path] = template
                 self.current_template = template
+                self.form_builder = None
                 self.build_form()
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось разобрать шаблон:\n{str(e)}")
@@ -337,6 +341,8 @@ class MainWindow(QMainWindow):
             self.save_display_names()
             self.build_form()
 
+        from ui.settings_dialog import SettingsDialog
+
         dialog = SettingsDialog(self.current_template, self.display_names, save_settings, self)
         dialog.resize(w, h)
         dialog.finished.connect(lambda: self.save_dialog_size("settings_dialog", dialog.size()))
@@ -346,287 +352,13 @@ class MainWindow(QMainWindow):
         if not self.current_template:
             return
         self.clear_right_panel()
-
-        if not self.current_template.fields and not self.current_template.blocks:
-            label = QLabel("В этом шаблоне нет переменных.\nВы можете использовать его как есть, нажав «Скачать DOCX».")
-            label.setAlignment(Qt.AlignCenter)
-            self.right_layout.addWidget(label)
-            generate_btn = QPushButton("📄 Скачать DOCX")
-            generate_btn.clicked.connect(self.generate_document)
-            self.right_layout.addWidget(generate_btn)
-            return
-
-        top_btn_layout = QHBoxLayout()
-        settings_btn = QPushButton("⚙️ Настройки шаблона")
-        settings_btn.clicked.connect(self.open_display_settings)
-        top_btn_layout.addWidget(settings_btn)
-        top_btn_layout.addStretch()
-        self.right_layout.addLayout(top_btn_layout)
-
-        items = []
-        for field in self.current_template.fields:
-            _, category = self.get_display_info(self.current_template.id, field.name, "field")
-            items.append((category, "field", field.name, field))
-        for block in self.current_template.blocks:
-            _, category = self.get_display_info(self.current_template.id, block.name, "block")
-            items.append((category, "block", block.name, block))
-
-        groups = defaultdict(list)
-        for cat, typ, name, obj in items:
-            cat_key = cat.strip() if cat.strip() else "Без категории"
-            groups[cat_key].append((typ, name, obj))
-
-        saved_order = self.display_names.get(self.current_template.id, {}).get("_categories_order", [])
-        if saved_order:
-            ordered_cats = [cat for cat in saved_order if cat in groups]
-            for cat in groups.keys():
-                if cat not in ordered_cats:
-                    ordered_cats.append(cat)
-        else:
-            ordered_cats = sorted(groups.keys(), key=lambda x: (x != "Без категории", x))
-
-        self.category_tabs = QTabWidget()
-        self.right_layout.addWidget(self.category_tabs)
-
-        for cat in ordered_cats:
-            tab = QWidget()
-            tab_layout = QVBoxLayout(tab)
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            form_widget = QWidget()
-            form_layout = QVBoxLayout(form_widget)
-            form_layout.setAlignment(Qt.AlignTop)
-
-            for typ, name, obj in groups[cat]:
-                if typ == "field":
-                    display, _ = self.get_display_info(self.current_template.id, name, "field")
-                    self.add_simple_field(form_layout, obj, display)
-                else:
-                    block_display, _ = self.get_display_info(self.current_template.id, name, "block")
-                    self.add_dynamic_block(form_layout, obj, block_display)
-
-            scroll.setWidget(form_widget)
-            tab_layout.addWidget(scroll)
-            self.category_tabs.addTab(tab, cat)
-
-        self.load_draft()
-
-        btn_layout = QHBoxLayout()
-        generate_btn = QPushButton("📄 Скачать DOCX")
-        reset_btn = QPushButton("🔄 Очистить форму")
-        btn_layout.addWidget(generate_btn)
-        btn_layout.addWidget(reset_btn)
-        self.right_layout.addLayout(btn_layout)
-
-        generate_btn.clicked.connect(self.generate_document)
-        reset_btn.clicked.connect(self.reset_form)
-
-    def add_simple_field(self, layout, field, display_name):
-        label = QLabel(display_name)
-        if field.required:
-            label.setText(label.text() + " *")
-        key = f"field:{field.name}"
-        info = self.display_names.get(self.current_template.id, {}).get(key, {})
-        if isinstance(info, str):
-            field_type = "text"
-        else:
-            field_type = info.get("type", "text")
-
-        if field_type == "date":
-            edit = QDateEdit()
-            edit.setDate(QDate.currentDate())
-            edit.setCalendarPopup(True)
-            edit.setDisplayFormat("dd.MM.yyyy")
-            edit.dateChanged.connect(self.schedule_draft_save)
-        elif field_type == "bool":
-            edit = QCheckBox()
-            edit.stateChanged.connect(self.schedule_draft_save)
-        elif field_type == "number":
-            edit = QDoubleSpinBox()
-            edit.setRange(-9999999.99, 9999999.99)
-            edit.setDecimals(2)
-            edit.valueChanged.connect(self.schedule_draft_save)
-            edit.textChanged.connect(self.schedule_draft_save)
-        else:
-            edit = QLineEdit()
-            edit.textChanged.connect(self.schedule_draft_save)
-
-        layout.addWidget(label)
-        layout.addWidget(edit)
-        self.simple_widgets[field.name] = edit
-
-        edit.setContextMenuPolicy(Qt.CustomContextMenu)
-        edit.customContextMenuRequested.connect(lambda pos, w=edit: self.show_preset_menu_for_widget(w, pos))
-
-    def add_dynamic_block(self, layout, block, block_display_name, category=None):
-        group_box = QGroupBox(block_display_name)
-        group_layout = QVBoxLayout(group_box)
-        self.block_layouts[block.name] = group_layout
-        block_key = block.name
-        self.block_widgets[block_key] = []
-        self.add_block_card(block, group_layout, block_key)
-        add_btn = QPushButton("+ Добавить ещё")
-        add_btn.clicked.connect(lambda checked, b=block, l=group_layout, key=block_key: self.add_block_card(b, l, key))
-        group_layout.addWidget(add_btn)
-        layout.addWidget(group_box)
-
-    def add_block_card(self, block, parent_layout, block_key):
-        card_frame = QFrame()
-        card_frame.setFrameShape(QFrame.StyledPanel)
-        card_layout = QVBoxLayout(card_frame)
-
-        header_layout = QHBoxLayout()
-        label = QLabel(f"Элемент {len(self.block_widgets.get(block_key, [])) + 1}")
-        remove_btn = QPushButton("🗑️ Удалить")
-        remove_btn.setFixedWidth(80)
-        header_layout.addWidget(label)
-        header_layout.addStretch()
-        header_layout.addWidget(remove_btn)
-        card_layout.addLayout(header_layout)
-
-        fields_widgets = {}
-        for field in block.fields:
-            display, _ = self.get_display_info(self.current_template.id, f"{block.name}.{field.name}", "block_field")
-            if not display or display == field.name:
-                display, _ = self.get_display_info(self.current_template.id, f"{block.name}.{field.name}", "block_field")
-            field_label = QLabel(display)
-
-            key = f"block_field:{block.name}.{field.name}"
-            data = self.display_names.get(self.current_template.id, {}).get(key, {})
-            if isinstance(data, str):
-                field_type = "text"
-            else:
-                field_type = data.get("type", "text")
-
-            if field_type == "date":
-                edit = QDateEdit()
-                edit.setDate(QDate.currentDate())
-                edit.dateChanged.connect(self.schedule_draft_save)
-            elif field_type == "bool":
-                edit = QCheckBox()
-                edit.stateChanged.connect(self.schedule_draft_save)
-            elif field_type == "number":
-                edit = QDoubleSpinBox()
-                edit.setRange(-9999999.99, 9999999.99)
-                edit.setDecimals(2)
-                edit.valueChanged.connect(self.schedule_draft_save)
-                edit.textChanged.connect(self.schedule_draft_save)
-            else:
-                edit = QLineEdit()
-                edit.textChanged.connect(self.schedule_draft_save)
-
-            edit.setContextMenuPolicy(Qt.CustomContextMenu)
-            edit.customContextMenuRequested.connect(lambda p, w=edit: self.show_preset_menu_for_widget(w, p))
-
-            card_layout.addWidget(field_label)
-            card_layout.addWidget(edit)
-            fields_widgets[field.name] = edit
-
-        card_data = {"frame": card_frame, "fields": fields_widgets}
-        self.block_widgets.setdefault(block_key, []).append(card_data)
-
-        add_btn_index = parent_layout.count() - 1
-        parent_layout.insertWidget(add_btn_index, card_frame)
-
-        remove_btn.clicked.connect(lambda checked, key=block_key, card=card_data: self.remove_block_card(key, card))
-        self.schedule_draft_save()
-
-    def remove_block_card(self, block_key, card_data):
-        if card_data in self.block_widgets[block_key]:
-            self.block_widgets[block_key].remove(card_data)
-            card_data["frame"].deleteLater()
-            self.renumber_block_cards(block_key)
-            self.schedule_draft_save()
-
-    def renumber_block_cards(self, block_key):
-        for idx, card in enumerate(self.block_widgets[block_key]):
-            for child in card["frame"].findChildren(QLabel):
-                if child.text().startswith("Элемент"):
-                    child.setText(f"Элемент {idx+1}")
-                    break
-
-    def collect_data(self):
-        data = {}
-        months_full = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-                       'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
-        months_short = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн',
-                        'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
-
-        def format_date(qdate, fmt):
-            if not fmt:
-                return qdate.toString("dd.MM.yyyy")
-            from datetime import datetime
-            dt = datetime(qdate.year(), qdate.month(), qdate.day())
-            if '%B' in fmt or '%b' in fmt:
-                result = fmt.replace('%B', months_full[dt.month-1]).replace('%b', months_short[dt.month-1])
-                import locale
-                locale.setlocale(locale.LC_TIME, 'C')
-                temp = result.replace(months_full[dt.month-1], 'MONTH_FULL').replace(months_short[dt.month-1], 'MONTH_SHORT')
-                temp = dt.strftime(temp)
-                temp = temp.replace('MONTH_FULL', months_full[dt.month-1]).replace('MONTH_SHORT', months_short[dt.month-1])
-                return temp
-            else:
-                try:
-                    return dt.strftime(fmt)
-                except:
-                    return qdate.toString("dd.MM.yyyy")
-
-        for name, widget in self.simple_widgets.items():
-            key = f"field:{name}"
-            info = self.display_names.get(self.current_template.id, {}).get(key, {})
-            field_type = info.get("type", "text")
-            fmt = info.get("format", "")
-            if isinstance(widget, QLineEdit):
-                val = widget.text()
-            elif isinstance(widget, QDateEdit):
-                val = format_date(widget.date(), fmt)
-            elif isinstance(widget, QCheckBox):
-                val = widget.isChecked()
-            elif isinstance(widget, QDoubleSpinBox):
-                val = widget.value()
-                if fmt and field_type == "number":
-                    try:
-                        val = fmt.format(val)
-                    except:
-                        pass
-            else:
-                val = None
-            data[name] = val
-
-        for block_name, cards in self.block_widgets.items():
-            block_data = []
-            for card in cards:
-                item = {}
-                for fname, fw in card["fields"].items():
-                    key = f"block_field:{block_name}.{fname}"
-                    info = self.display_names.get(self.current_template.id, {}).get(key, {})
-                    field_type = info.get("type", "text")
-                    fmt = info.get("format", "")
-                    if isinstance(fw, QLineEdit):
-                        val = fw.text()
-                    elif isinstance(fw, QDateEdit):
-                        val = format_date(fw.date(), fmt)
-                    elif isinstance(fw, QCheckBox):
-                        val = fw.isChecked()
-                    elif isinstance(fw, QDoubleSpinBox):
-                        val = fw.value()
-                        if fmt and field_type == "number":
-                            try:
-                                val = fmt.format(val)
-                            except:
-                                pass
-                    else:
-                        val = None
-                    item[fname] = val
-                block_data.append(item)
-            data[block_name] = block_data
-        return data
+        self.form_builder = FormBuilder(self, self.current_template, self.display_names, self.data_dir)
+        self.form_builder.build_form(self.right_layout)
 
     def generate_document(self):
         if not self.current_template:
             return
-        data = self.collect_data()
+        data = self.form_builder.collect_data() if self.form_builder else {}
         missing = []
         for field in self.current_template.fields:
             if field.required and not data.get(field.name, ""):
@@ -639,6 +371,8 @@ class MainWindow(QMainWindow):
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
             tmp_path = tmp.name
         try:
+            from logic.doc_generator import generate_docx
+
             generate_docx(self.current_template.file_path, data, tmp_path)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось создать документ:\n{str(e)}")
@@ -652,47 +386,38 @@ class MainWindow(QMainWindow):
             os.unlink(tmp_path)
         self.clear_draft()
 
-    def reset_form(self):
-        for widget in self.simple_widgets.values():
-            if isinstance(widget, QLineEdit):
-                widget.clear()
-            elif isinstance(widget, QDateEdit):
-                widget.setDate(QDate.currentDate())
-            elif isinstance(widget, QCheckBox):
-                widget.setChecked(False)
-            elif isinstance(widget, QDoubleSpinBox):
-                widget.setValue(0.0)
-        for block_name, cards in list(self.block_widgets.items()):
-            while len(cards) > 1:
-                self.remove_block_card(block_name, cards[-1])
-            if cards:
-                for fw in cards[0]["fields"].values():
-                    if isinstance(fw, QLineEdit):
-                        fw.clear()
-                    elif isinstance(fw, QDateEdit):
-                        fw.setDate(QDate.currentDate())
-                    elif isinstance(fw, QCheckBox):
-                        fw.setChecked(False)
-                    elif isinstance(fw, QDoubleSpinBox):
-                        fw.setValue(0.0)
-        self.clear_draft()
-        self.schedule_draft_save()
-
     def mass_generate(self):
         if not self.current_template:
             QMessageBox.warning(self, "Нет шаблона", "Сначала выберите шаблон в дереве.")
             return
-        w, h = self.get_dialog_size("mass_generate_dialog", 800, 600)
-        dialog = MassGenerateDialog(self.current_template, self)
-        dialog.resize(w, h)
-        dialog.finished.connect(lambda: self.save_dialog_size("mass_generate_dialog", dialog.size()))
-        dialog.exec()
+
+        # Показываем индикатор загрузки
+        from PySide6.QtWidgets import QProgressDialog
+        progress = QProgressDialog("Загрузка массовой генерации...", None, 0, 0, self)
+        progress.setWindowTitle("Пельмень")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)  # показываем мгновенно
+        progress.show()
+        QApplication.processEvents()  # принудительно обновляем UI
+
+        try:
+            from ui.mass_generate_dialog import MassGenerateDialog
+            w, h = self.get_dialog_size("mass_generate_dialog", 800, 600)
+            dialog = MassGenerateDialog(self.current_template, self)
+            dialog.resize(w, h)
+            dialog.finished.connect(lambda: self.save_dialog_size("mass_generate_dialog", dialog.size()))
+            progress.close()
+            dialog.exec()
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть диалог массовой генерации:\n{str(e)}")
 
     def preview_document(self):
         if not self.current_template:
             QMessageBox.warning(self, "Нет шаблона", "Сначала выберите шаблон.")
             return
-        data = self.collect_data()
+        data = self.form_builder.collect_data() if self.form_builder else {}
         missing = []
         for field in self.current_template.fields:
             if field.required and not data.get(field.name, ""):
@@ -707,6 +432,8 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tmp_path = os.path.join(temp_dir, f"preview_{self.current_template.name}_{timestamp}.docx")
         try:
+            from logic.doc_generator import generate_docx
+
             generate_docx(self.current_template.file_path, data, tmp_path)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось создать документ:\n{str(e)}")
@@ -716,104 +443,15 @@ class MainWindow(QMainWindow):
     def get_draft_path(self, template_id):
         return os.path.join(self.drafts_dir, f"{template_id}.json")
 
-    def save_draft(self):
-        if not self.current_template:
-            return
-        data = self.collect_data()
-        draft_path = self.get_draft_path(self.current_template.id)
-        with open(draft_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    def load_draft(self):
-        if not self.current_template:
-            return
-        draft_path = self.get_draft_path(self.current_template.id)
-        if not os.path.exists(draft_path):
-            return
-        with open(draft_path, "r", encoding="utf-8") as f:
-            draft_data = json.load(f)
-
-        for name, widget in self.simple_widgets.items():
-            if name in draft_data:
-                val = draft_data[name]
-                if isinstance(widget, QLineEdit):
-                    widget.setText(str(val))
-                elif isinstance(widget, QDateEdit):
-                    if val:
-                        if isinstance(val, str):
-                            widget.setDate(QDate.fromString(val, "yyyy-MM-dd"))
-                elif isinstance(widget, QCheckBox):
-                    if isinstance(val, bool):
-                        widget.setChecked(val)
-                    elif isinstance(val, str):
-                        widget.setChecked(val.lower() == 'true')
-                    else:
-                        widget.setChecked(bool(val))
-                elif isinstance(widget, QDoubleSpinBox):
-                    if isinstance(val, (int, float)):
-                        widget.setValue(val)
-                    elif isinstance(val, str):
-                        try:
-                            widget.setValue(float(val))
-                        except:
-                            pass
-
-        for block in self.current_template.blocks:
-            block_name = block.name
-            if block_name not in draft_data:
-                continue
-            block_items = draft_data[block_name]
-            if not block_items:
-                continue
-            group_layout = self.block_layouts.get(block_name)
-            if not group_layout:
-                continue
-            if block_name in self.block_widgets:
-                while self.block_widgets[block_name]:
-                    self.remove_block_card(block_name, self.block_widgets[block_name][-1])
-            for item_data in block_items:
-                self.add_block_card(block, group_layout, block_name)
-                new_card = self.block_widgets[block_name][-1]
-                for field_name, value in item_data.items():
-                    if field_name in new_card["fields"]:
-                        widget = new_card["fields"][field_name]
-                        if isinstance(widget, QLineEdit):
-                            widget.setText(str(value))
-                        elif isinstance(widget, QDateEdit):
-                            if value:
-                                if isinstance(value, str):
-                                    widget.setDate(QDate.fromString(value, "yyyy-MM-dd"))
-                        elif isinstance(widget, QCheckBox):
-                            if isinstance(value, bool):
-                                widget.setChecked(value)
-                            elif isinstance(value, str):
-                                widget.setChecked(value.lower() == 'true')
-                            else:
-                                widget.setChecked(bool(value))
-                        elif isinstance(widget, QDoubleSpinBox):
-                            if isinstance(value, (int, float)):
-                                widget.setValue(value)
-                            elif isinstance(value, str):
-                                try:
-                                    widget.setValue(float(value))
-                                except:
-                                    pass
-
-    def clear_draft(self):
-        if self.current_template:
-            draft_path = self.get_draft_path(self.current_template.id)
-            if os.path.exists(draft_path):
-                os.remove(draft_path)
-
     def schedule_draft_save(self):
-        if not self.current_template:
+        if not self.current_template or not self.form_builder:
             return
         if hasattr(self, '_draft_timer') and self._draft_timer is not None:
             self._draft_timer.stop()
         else:
             self._draft_timer = QTimer()
             self._draft_timer.setSingleShot(True)
-            self._draft_timer.timeout.connect(self.save_draft)
+            self._draft_timer.timeout.connect(lambda: self.form_builder.save_draft() if self.form_builder else None)
         self._draft_timer.start(500)
 
     def toggle_dark_theme(self, checked):
@@ -868,6 +506,8 @@ class MainWindow(QMainWindow):
         app.setStyle('Fusion')
 
     def open_presets(self):
+        from ui.presets_dialog import PresetsDialog
+        
         w, h = self.get_dialog_size("presets_dialog", 600, 450)
         dialog = PresetsDialog(self)
         dialog.resize(w, h)
@@ -882,6 +522,8 @@ class MainWindow(QMainWindow):
             self.tree_view.setRootIndex(self.proxy_model.mapFromSource(root_index))
 
     def open_helper(self):
+        from ui.helper_dialog import HelperDialog
+
         w, h = self.get_dialog_size("helper_dialog", 550, 500)
         dialog = HelperDialog(self)
         dialog.resize(w, h)
@@ -894,11 +536,11 @@ class MainWindow(QMainWindow):
         dialog.setMinimumSize(750, 550)
         dialog.setSizeGripEnabled(True)
         layout = QVBoxLayout(dialog)
-        text_edit = QTextEdit()
-        text_edit.setHtml(html)
-        text_edit.setReadOnly(True)
-        # Убираем локальный стиль, доверяем HTML
-        layout.addWidget(text_edit)
+        text_browser = QTextBrowser()
+        text_browser.setHtml(html)
+        text_browser.setOpenExternalLinks(True)
+        text_browser.setReadOnly(True)
+        layout.addWidget(text_browser)
         btn = QPushButton("Закрыть")
         btn.clicked.connect(dialog.accept)
         btn.setFixedWidth(100)
@@ -984,13 +626,17 @@ class MainWindow(QMainWindow):
         <head><style>
             body { font-family: 'Segoe UI', Arial; text-align: center; margin: 40px; }
             h2 { color: #2c3e50; }
+            a { color: #3498db; text-decoration: none; }
+            a:hover { text-decoration: underline; }
         </style></head>
         <body>
         <h2>Пельмень</h2>
-        <p><b>Версия 1.0</b></p>
+        <p><b>Версия 1.3</b></p>
+        <p>© 2026</p>
         <p>Простой шаблонизатор документов</p>
         <p>Сделано на Python + PySide6<br>
         Использует: python-docx, docxtpl</p>
+        <p><a href="https://github.com/factorxd/pelmen">GitHub</a></p>
         </body>
         </html>
         """
@@ -1035,7 +681,8 @@ class MainWindow(QMainWindow):
             widget.insertPlainText(value)
         elif isinstance(widget, QDoubleSpinBox):
             try:
-                widget.setValue(float(value))
+                from ui.form_builder import FormBuilder
+                widget.setValue(FormBuilder.extract_number(value))
             except:
                 pass
         elif isinstance(widget, QDateEdit):
@@ -1100,3 +747,67 @@ class MainWindow(QMainWindow):
         settings["dialog_sizes"][dialog_name] = [size.width(), size.height()]
         with open(self.settings_file, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
+
+    def browse_image(self, line_edit):
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите изображение", "",
+                                              "Images (*.png *.jpg *.jpeg *.bmp *.gif)")
+        if path:
+            line_edit.setText(path)
+
+    def check_for_updates(self, manual=False):
+        from PySide6.QtCore import QThread, Signal
+        import json
+        import urllib.request
+
+        class UpdateThread(QThread):
+            result_signal = Signal(dict)
+            error_signal = Signal(str)
+
+            def run(self):
+                try:
+                    req = urllib.request.Request(
+                        "https://api.github.com/repos/factorxd/pelmen/releases/latest",
+                        headers={"User-Agent": "Pelmen"}
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        if response.status == 200:
+                            data = json.loads(response.read().decode())
+                            self.result_signal.emit(data)
+                        else:
+                            self.error_signal.emit(f"HTTP {response.status}")
+                except Exception as e:
+                    self.error_signal.emit(str(e))
+
+        def version_tuple(v):
+            # Преобразует строку версии "1.2.3" в кортеж (1,2,3)
+            return tuple(map(int, v.split('.')))
+
+        def on_result(data):
+            latest_tag = data.get("tag_name", "").lstrip('v')
+            current_version = "1.3"
+            try:
+                if version_tuple(latest_tag) > version_tuple(current_version):
+                    reply = QMessageBox.question(self, "Обновление",
+                                                 f"Доступна новая версия {latest_tag}\nПерейти на страницу загрузки?",
+                                                 QMessageBox.Yes | QMessageBox.No)
+                    if reply == QMessageBox.Yes:
+                        import webbrowser
+                        webbrowser.open(data.get("html_url"))
+                elif manual:
+                    QMessageBox.information(self, "Обновления", f"У вас последняя версия {current_version}")
+            except ValueError:
+                # Если версия в неправильном формате
+                if manual:
+                    QMessageBox.warning(self, "Ошибка", "Не удалось определить версии для сравнения.")
+
+        def on_error(error_msg):
+            if manual:
+                QMessageBox.warning(self, "Ошибка", f"Не удалось проверить обновления:\n{error_msg}")
+
+        self.update_thread = UpdateThread()
+        self.update_thread.result_signal.connect(on_result)
+        self.update_thread.error_signal.connect(on_error)
+        self.update_thread.start()
+
+    def manual_check_updates(self):
+        self.check_for_updates(manual=True)
