@@ -2,15 +2,14 @@
 import os
 import json
 from collections import defaultdict
-from datetime import datetime
+import hashlib
 
 from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QScrollArea,
     QLabel, QLineEdit, QDateEdit, QCheckBox, QDoubleSpinBox,
-    QPushButton, QFrame, QGroupBox, QMessageBox, QFileDialog
+    QPushButton, QFrame, QGroupBox, QFileDialog
 )
-from PySide6.QtGui import QAction
 
 class FormBuilder:
     def __init__(self, parent_window, template, display_names, data_dir):
@@ -458,7 +457,9 @@ class FormBuilder:
             os.remove(draft_path)
 
     def get_draft_path(self):
-        return os.path.join(self.drafts_dir, f"{self.template.id}.json")
+        # Генерируем уникальное имя файла на основе полного пути к шаблону
+        safe_id = hashlib.md5(self.template.file_path.encode('utf-8')).hexdigest()
+        return os.path.join(self.drafts_dir, f"{safe_id}.json")
 
     def reset_form(self):
         for widget in self.simple_widgets.values():

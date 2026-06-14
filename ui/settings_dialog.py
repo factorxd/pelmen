@@ -1,9 +1,10 @@
 import json
+import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QTreeWidget, QTreeWidgetItem, QHeaderView, QPushButton,
     QInputDialog, QMessageBox, QFileDialog, QListWidget,
-    QListWidgetItem, QLabel, QDialogButtonBox, QComboBox, QLineEdit
+    QListWidgetItem, QLabel, QDialogButtonBox, QComboBox
 )
 from PySide6.QtCore import Qt
 
@@ -391,11 +392,16 @@ class SettingsDialog(QDialog):
 
     # ---------- Импорт/экспорт ----------
     def do_export(self):
-        data = {self.tid: self.display_names.get(self.tid, {})}
-        path, _ = QFileDialog.getSaveFileName(self, "Экспорт настроек", f"{self.template.name}_settings.json", "JSON (*.json)")
+        # Сохраняем настройки, привязанные к имени файла (без расширения)
+        export_data = {
+            "template_name": os.path.splitext(os.path.basename(self.template.file_path))[0],
+            "settings": self.display_names.get(self.tid, {})
+        }
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт настроек", f"{self.template.name}_settings.json",
+                                              "JSON (*.json)")
         if path:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "Успех", f"Экспортировано в {path}")
 
     def do_import(self):
@@ -404,15 +410,30 @@ class SettingsDialog(QDialog):
             return
         with open(path, "r", encoding="utf-8") as f:
             imported = json.load(f)
-        if self.tid not in imported:
-            QMessageBox.warning(self, "Ошибка", "Файл не содержит настроек для этого шаблона")
-            return
-        self.display_names[self.tid] = imported[self.tid]
-        self.load_categories()
-        self.load_tree()
-        self.load_items()
-        QMessageBox.information(self, "Импорт", "Настройки импортированы.")
 
+        if "template_name" in imported and "settings" in imported:
+            settings = imported["settings"]
+        elif self.tid in imported:
+            settings = imported[self.tid]
+        else:
+            QMessageBox.warning(self, "Ошибка", "Файл не содержит настроек для шаблона.")
+            return
+
+        reply = QMessageBox.question(self, "Подтверждение",
+                                     f"Импортировать настройки в текущий шаблон '{self.template.name}'?\nТекущие настройки будут заменены.",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        # Применяем настройки к данным
+        self.display_names[self.tid] = settings
+        # Обновляем главное окно (форму)
+        self.save_callback(self.display_names)
+        # Обновляем интерфейс самого диалога настроек
+        self.load_tree()  # перестраивает дерево с именами, типами, форматами
+        self.load_categories()  # обновляет список категорий
+        self.load_items()  # обновляет список элементов для категорий
+        QMessageBox.information(self, "Импорт", "Настройки успешно импортированы.")
     # ---------- Сохранение ----------
     def accept(self):
         def save_tree_item(item):

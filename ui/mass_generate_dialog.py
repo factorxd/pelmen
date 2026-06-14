@@ -1,17 +1,14 @@
 # ui/mass_generate_dialog.py
 import os
-import json
 import tempfile
 import zipfile
 import pandas as pd
-from docx.enum.text import WD_BREAK
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
-    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QWidget,
     QLabel, QProgressBar, QMessageBox, QGroupBox, QFormLayout,
-    QRadioButton, QButtonGroup, QLineEdit, QCheckBox
+    QRadioButton, QLineEdit, QCheckBox, QScrollArea
 )
-from PySide6.QtCore import Qt
 
 class MassGenerateDialog(QDialog):
     def __init__(self, template, parent=None):
@@ -44,9 +41,28 @@ class MassGenerateDialog(QDialog):
         # Группа сопоставления колонок
         self.mapping_group = QGroupBox("2. Сопоставьте колонки с полями шаблона")
         self.mapping_group.setVisible(False)
-        mapping_layout = QFormLayout(self.mapping_group)
-        self.mapping_widgets = []
+        mapping_layout = QVBoxLayout(self.mapping_group)
+
+        # Чекбокс для переключения отображаемых имён
+        self.show_display_names_cb = QCheckBox("Показывать отображаемые имена полей")
+        self.show_display_names_cb.setChecked(True)  # по умолчанию показываем красивые имена
+        self.show_display_names_cb.stateChanged.connect(self.on_display_names_toggled)
+        mapping_layout.addWidget(self.show_display_names_cb)
+
+        # Scroll area для компактности
+        self.mapping_scroll = QScrollArea()
+        self.mapping_scroll.setWidgetResizable(True)
+        self.mapping_scroll.setMaximumHeight(300)  # можно подобрать по вкусу
+        mapping_scroll_widget = QWidget()
+        self.mapping_form_layout = QFormLayout(mapping_scroll_widget)
+        self.mapping_form_layout.setVerticalSpacing(5)
+        self.mapping_scroll.setWidget(mapping_scroll_widget)
+        mapping_layout.addWidget(self.mapping_scroll)
+
         layout.addWidget(self.mapping_group)
+
+        # Инициализация списка виджетов
+        self.mapping_widgets = []
 
         # Группа настроек генерации
         self.settings_group = QGroupBox("3. Настройки генерации")
@@ -138,25 +154,7 @@ class MassGenerateDialog(QDialog):
         self.table.setMaximumHeight(200)
 
     def setup_mapping(self):
-        all_fields = []
-        for field in self.template.fields:
-            all_fields.append(("field", field.name))
-        # для простоты не добавляем поля блоков, так как массовая генерация обычно для простых полей
-        # но можно добавить, если нужно
-        layout = self.mapping_group.layout()
-        for i in reversed(range(layout.count())):
-            widget = layout.itemAt(i).widget()
-            if widget:
-                widget.deleteLater()
-        self.mapping_widgets.clear()
-        for col in self.columns:
-            label = QLabel(f"Колонка '{col}' →")
-            combo = QComboBox()
-            combo.addItem("(не использовать)", None)
-            for typ, field_name in all_fields:
-                combo.addItem(field_name, (typ, field_name))
-            layout.addRow(label, combo)
-            self.mapping_widgets.append((col, combo))
+        self.rebuild_mapping_ui()
 
     def generate(self):
         from logic.doc_generator import generate_docx
@@ -360,3 +358,58 @@ class MassGenerateDialog(QDialog):
             return bool(value)
         else:
             return str(value)
+
+    def on_display_names_toggled(self):
+        if not hasattr(self, 'mapping_widgets') or not self.mapping_widgets:
+            return
+        # Сохраняем текущие выбранные поля для каждой колонки
+        selected_fields = {}
+        for col, combo in self.mapping_widgets:
+            data = combo.currentData()
+            if data is not None:
+                selected_fields[col] = data  # (typ, field_name)
+            else:
+                selected_fields[col] = None
+        # Перестраиваем UI сопоставления
+        self.rebuild_mapping_ui()
+        # Восстанавливаем выбранные значения
+        for col, combo in self.mapping_widgets:
+            data = selected_fields.get(col)
+            if data is None:
+                combo.setCurrentIndex(0)
+            else:
+                # ищем индекс с соответствующими данными
+                for idx in range(combo.count()):
+                    if combo.itemData(idx) == data:
+                        combo.setCurrentIndex(idx)
+                        break
+
+    def rebuild_mapping_ui(self):
+        # Очищаем старые виджеты
+        for i in reversed(range(self.mapping_form_layout.count())):
+            widget = self.mapping_form_layout.itemAt(i).widget()
+            if widget:
+                widget.deleteLater()
+        self.mapping_widgets.clear()
+
+        # Собираем список полей для отображения
+        all_fields = []
+        for field in self.template.fields:
+            # Получаем отображаемое имя из настроек, если чекбокс включён
+            if self.show_display_names_cb.isChecked():
+                display, _ = self.parent().get_display_info(self.template.id, field.name, "field")
+                # Если отображаемое имя не задано, показываем исходное
+                display_name = display if display else field.name
+            else:
+                display_name = field.name
+            all_fields.append((display_name, "field", field.name))
+
+        # Создаём строки для каждой колонки
+        for col in self.columns:
+            label = QLabel(f"Колонка '{col}' →")
+            combo = QComboBox()
+            combo.addItem("(не использовать)", None)
+            for display_name, typ, field_name in all_fields:
+                combo.addItem(display_name, (typ, field_name))
+            self.mapping_form_layout.addRow(label, combo)
+            self.mapping_widgets.append((col, combo))

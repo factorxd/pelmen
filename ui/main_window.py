@@ -4,15 +4,13 @@ import json
 import tempfile
 import shutil
 import sys
-from collections import defaultdict
 from datetime import datetime
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeView, QFileDialog, QMessageBox, QFileSystemModel,
-    QScrollArea, QLineEdit, QPushButton, QLabel, QDateEdit,
-    QFrame, QGroupBox, QDialog, QTabWidget, QCheckBox,
-    QDoubleSpinBox, QTextEdit, QApplication, QMenu, QTextBrowser
+    QLineEdit, QPushButton, QLabel, QDateEdit,
+    QDialog, QDoubleSpinBox, QTextEdit, QApplication, QMenu, QTextBrowser
 )
 from PySide6.QtCore import Qt, QDir, QDate, QSortFilterProxyModel, QTimer
 from PySide6.QtGui import QAction, QIcon, QPalette, QColor
@@ -75,12 +73,15 @@ class MainWindow(QMainWindow):
         self.load_display_names()
         self.init_ui()
         self.load_settings()
+        self.draft_interval_seconds = self.settings.get("draft_interval", 0.5)
+        self.apply_font_size(self.settings.get("font_size", "Средний"))
         if self.root_folder:
             self.set_root_folder(self.root_folder)
         else:
             self.ask_for_folder()
 
-        QTimer.singleShot(2000, lambda: self.check_for_updates(manual=False))
+        if self.settings.get("auto_check_updates", True):
+            QTimer.singleShot(2000, lambda: self.check_for_updates(manual=False))
 
         # Очистка временных файлов предпросмотра
         preview_temp_dir = os.path.join(self.data_dir, "temp_preview")
@@ -94,8 +95,6 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("Файл")
-        choose_folder_action = file_menu.addAction("Выбрать папку с шаблонами")
-        choose_folder_action.triggered.connect(self.choose_root_folder)
         open_folder_action = file_menu.addAction("Открыть папку с шаблонами")
         open_folder_action.triggered.connect(self.open_templates_folder)
         helper_action = file_menu.addAction("Помощник разметки")
@@ -106,22 +105,16 @@ class MainWindow(QMainWindow):
         mass_btn.triggered.connect(self.mass_generate)
         preview_action = file_menu.addAction("Предпросмотр документа")
         preview_action.triggered.connect(self.preview_document)
+        settings_action = file_menu.addAction("Настройки")
+        settings_action.triggered.connect(self.open_settings_program)
         exit_action = file_menu.addAction("Выход")
         exit_action.triggered.connect(self.close)
-
-        view_menu = menubar.addMenu("Вид")
-        self.dark_theme_action = QAction("Тёмная тема", self)
-        self.dark_theme_action.setCheckable(True)
-        self.dark_theme_action.triggered.connect(self.toggle_dark_theme)
-        view_menu.addAction(self.dark_theme_action)
 
         help_menu = menubar.addMenu("Справка")
         help_action = help_menu.addAction("Как пользоваться")
         help_action.triggered.connect(self.show_help)
         about_action = help_menu.addAction("О программе")
         about_action.triggered.connect(self.show_about)
-        check_updates_action = help_menu.addAction("Проверить обновления")
-        check_updates_action.triggered.connect(self.manual_check_updates)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -224,17 +217,18 @@ class MainWindow(QMainWindow):
     def load_settings(self):
         if os.path.exists(self.settings_file):
             with open(self.settings_file, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-                self.root_folder = settings.get("root_folder", "")
-                dark_theme = settings.get("dark_theme", False)
-                if hasattr(self, 'dark_theme_action'):
-                    self.dark_theme_action.setChecked(dark_theme)
-                    self.toggle_dark_theme(dark_theme)
+                self.settings = json.load(f)
+                self.root_folder = self.settings.get("root_folder", "")
+                dark_theme = self.settings.get("dark_theme", False)
+                self.toggle_dark_theme(dark_theme)
+        else:
+            self.settings = {}
 
     def save_settings(self):
-        dark_theme_state = self.dark_theme_action.isChecked() if hasattr(self, 'dark_theme_action') else False
+        self.settings["root_folder"] = self.root_folder
+        # dark_theme уже обновляется в toggle_dark_theme
         with open(self.settings_file, "w", encoding="utf-8") as f:
-            json.dump({"root_folder": self.root_folder, "dark_theme": dark_theme_state}, f)
+            json.dump(self.settings, f, ensure_ascii=False, indent=2)
 
     def load_display_names(self):
         if os.path.exists(self.display_names_file):
@@ -452,7 +446,7 @@ class MainWindow(QMainWindow):
             self._draft_timer = QTimer()
             self._draft_timer.setSingleShot(True)
             self._draft_timer.timeout.connect(lambda: self.form_builder.save_draft() if self.form_builder else None)
-        self._draft_timer.start(500)
+        self._draft_timer.start(int(self.draft_interval_seconds * 1000))
 
     def toggle_dark_theme(self, checked):
         app = QApplication.instance()
@@ -505,6 +499,8 @@ class MainWindow(QMainWindow):
             app.setStyleSheet("")
         app.setStyle('Fusion')
 
+        self.settings["dark_theme"] = checked
+
     def open_presets(self):
         from ui.presets_dialog import PresetsDialog
         
@@ -556,7 +552,7 @@ class MainWindow(QMainWindow):
         if os.path.exists(help_file):
             with open(help_file, "r", encoding="utf-8") as f:
                 original_html = f.read()
-            is_dark = self.dark_theme_action.isChecked() if hasattr(self, 'dark_theme_action') else False
+            is_dark = self.settings.get("dark_theme", False)
             if is_dark:
                 # Вставляем стили в начало <head>
                 # Удаляем существующий <style> и вставляем свой с !important
@@ -587,6 +583,11 @@ class MainWindow(QMainWindow):
                         overflow-x: auto;
                         color: #f8f8f2 !important;
                         border: 1px solid #444;
+                    }
+                    pre code {
+                        background: transparent !important;
+                        color: #f8f8f2 !important;
+                        padding: 0;
                     }
                     .note {
                         background: #2a2a2a !important;
@@ -811,3 +812,22 @@ class MainWindow(QMainWindow):
 
     def manual_check_updates(self):
         self.check_for_updates(manual=True)
+
+    def open_settings_program(self):
+        from ui.settings_program_dialog import SettingsProgramDialog
+        dialog = SettingsProgramDialog(self)
+        dialog.exec()
+
+    def apply_font_size(self, size_name):
+        """Применяет размер шрифта ко всему приложению"""
+        font = QApplication.font()
+        if size_name == "Маленький":
+            font.setPointSize(8)
+        elif size_name == "Большой":
+            font.setPointSize(12)
+        else:  # "Средний" или по умолчанию
+            font.setPointSize(10)
+        QApplication.setFont(font)
+        # Перестраиваем текущую форму, чтобы обновить виджеты
+        if self.current_template:
+            self.build_form()
