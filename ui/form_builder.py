@@ -372,7 +372,11 @@ class FormBuilder:
         return data
 
     def save_draft(self):
-        data = self.collect_data()
+        try:
+            data = self.collect_data()
+        except RuntimeError:
+            # Виджеты уже удалены (например, форма закрыта), не сохраняем
+            return
         draft_path = self.get_draft_path()
         with open(draft_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

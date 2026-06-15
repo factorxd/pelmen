@@ -18,6 +18,7 @@ class MassGenerateDialog(QDialog):
         self.setMinimumSize(800, 600)
         self.df = None
         self.columns = []
+        self.all_fields = []
         self.field_mapping = {}
         self.init_ui()
 
@@ -155,6 +156,7 @@ class MassGenerateDialog(QDialog):
 
     def setup_mapping(self):
         self.rebuild_mapping_ui()
+        self.auto_select_mapping()
 
     def generate(self):
         from logic.doc_generator import generate_docx
@@ -395,14 +397,13 @@ class MassGenerateDialog(QDialog):
         # Собираем список полей для отображения
         all_fields = []
         for field in self.template.fields:
-            # Получаем отображаемое имя из настроек, если чекбокс включён
             if self.show_display_names_cb.isChecked():
                 display, _ = self.parent().get_display_info(self.template.id, field.name, "field")
-                # Если отображаемое имя не задано, показываем исходное
                 display_name = display if display else field.name
             else:
                 display_name = field.name
             all_fields.append((display_name, "field", field.name))
+        self.all_fields = all_fields  # сохраняем для auto_select
 
         # Создаём строки для каждой колонки
         for col in self.columns:
@@ -413,3 +414,22 @@ class MassGenerateDialog(QDialog):
                 combo.addItem(display_name, (typ, field_name))
             self.mapping_form_layout.addRow(label, combo)
             self.mapping_widgets.append((col, combo))
+
+    def auto_select_mapping(self):
+        if not hasattr(self, 'mapping_widgets') or not self.mapping_widgets:
+            return
+        if not hasattr(self, 'all_fields') or not self.all_fields:
+            return
+        lookup = {}
+        for display_name, typ, field_name in self.all_fields:
+            lookup[display_name.lower()] = (typ, field_name)
+            lookup[field_name.lower()] = (typ, field_name)
+
+        for col, combo in self.mapping_widgets:
+            col_lower = col.lower()
+            if col_lower in lookup:
+                target_data = lookup[col_lower]
+                for idx in range(combo.count()):
+                    if combo.itemData(idx) == target_data:
+                        combo.setCurrentIndex(idx)
+                        break

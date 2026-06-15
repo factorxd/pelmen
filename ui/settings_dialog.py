@@ -4,9 +4,158 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QTreeWidget, QTreeWidgetItem, QHeaderView, QPushButton,
     QInputDialog, QMessageBox, QFileDialog, QListWidget,
-    QListWidgetItem, QLabel, QDialogButtonBox, QComboBox
+    QLabel, QDialogButtonBox, QComboBox
 )
 from PySide6.QtCore import Qt
+
+class CategoryListWidget(QListWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragDropMode(QListWidget.InternalMove)  # для переупорядочивания
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)          # можно перетаскивать элементы внутри списка
+        self.setDropIndicatorShown(True)
+        self.parent_dialog = None
+
+    def dragEnterEvent(self, event):
+        # Разрешаем дроп, если источник - дерево категорий или этот же список
+        if isinstance(event.source(), CategoryTreeWidget) or event.source() is self:
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        source_widget = event.source()
+        if source_widget is self:
+            # Внутреннее перемещение — меняем порядок категорий
+            super().dropEvent(event)
+            self.parent_dialog.update_categories_order()
+            event.accept()
+        elif isinstance(source_widget, CategoryTreeWidget):
+            # Перетаскивание элемента из дерева для смены категории
+            dragged_items = source_widget.selectedItems()
+            if not dragged_items:
+                event.ignore()
+                return
+            drag_item = dragged_items[0]
+            if drag_item.parent() is None:
+                event.ignore()
+                return
+            target_item = self.itemAt(event.pos())
+            if not target_item:
+                event.ignore()
+                return
+            new_category = target_item.text()
+            old_parent = drag_item.parent()
+            if old_parent.text(0) == new_category:
+                event.accept()
+                return
+            # Находим новый корневой элемент (категорию) в дереве
+            new_root = None
+            for i in range(source_widget.topLevelItemCount()):
+                if source_widget.topLevelItem(i).text(0) == new_category:
+                    new_root = source_widget.topLevelItem(i)
+                    break
+            if new_root:
+                old_parent.removeChild(drag_item)
+                new_root.addChild(drag_item)
+                # Обновляем данные
+                key = drag_item.data(0, Qt.UserRole)
+                if key:
+                    existing = self.parent_dialog.display_names.get(self.parent_dialog.tid, {}).get(key, {})
+                    if isinstance(existing, str):
+                        existing = {"display": existing}
+                    existing["category"] = new_category
+                    self.parent_dialog.display_names.setdefault(self.parent_dialog.tid, {})[key] = existing
+                    # Обновляем дочерние поля для блоков
+                    if key.startswith("block:") and not key.startswith("block_field:"):
+                        block_name = key.split(":", 1)[1]
+                        for field in self.parent_dialog.template.blocks:
+                            if field.name == block_name:
+                                for subfield in field.fields:
+                                    subkey = f"block_field:{block_name}.{subfield.name}"
+                                    sub_existing = self.parent_dialog.display_names.get(self.parent_dialog.tid, {}).get(subkey, {})
+                                    if isinstance(sub_existing, str):
+                                        sub_existing = {"display": sub_existing}
+                                    sub_existing["category"] = new_category
+                                    self.parent_dialog.display_names.setdefault(self.parent_dialog.tid, {})[subkey] = sub_existing
+                                break
+                source_widget.expandItem(new_root)
+            event.accept()
+        else:
+            event.ignore()
+
+class CategoryTreeWidget(QTreeWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragDropMode(QTreeWidget.DragDrop)  # вместо InternalMove
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)
+        self.setDropIndicatorShown(True)
+        self.parent_dialog = None
+
+    def dropEvent(self, event):
+        # Получаем элемент, на который сбрасываем
+        target_item = self.itemAt(event.position().toPoint())
+        if not target_item:
+            event.ignore()
+            return
+        # Получаем перетаскиваемые элементы (выделенные)
+        dragged_items = self.selectedItems()
+        if not dragged_items:
+            event.ignore()
+            return
+        # Перемещаем каждый элемент в целевой родитель
+        for drag_item in dragged_items:
+            # Нельзя перемещать корневые элементы
+            if drag_item.parent() is None:
+                continue
+            # Целевой родитель может быть как категория (корневой), так и элемент
+            # Нам нужно, чтобы целевой родитель был корневым (категория)
+            if target_item.parent() is None:
+                new_parent = target_item
+            else:
+                # Если целевой элемент находится внутри категории, поднимаемся до родительской категории
+                new_parent = target_item.parent()
+            if new_parent is None:
+                continue
+            # Перемещаем
+            old_parent = drag_item.parent()
+            if old_parent == new_parent:
+                continue
+            old_parent.removeChild(drag_item)
+            new_parent.addChild(drag_item)
+            # Обновляем данные в display_names
+            key = drag_item.data(0, Qt.UserRole)
+            if key:
+                existing = self.parent_dialog.display_names.get(self.parent_dialog.tid, {}).get(key, {})
+                if isinstance(existing, str):
+                    existing = {"display": existing}
+                existing["category"] = new_parent.text(0)
+                self.parent_dialog.display_names.setdefault(self.parent_dialog.tid, {})[key] = existing
+                # Обновляем дочерние поля для блоков
+                if key.startswith("block:") and not key.startswith("block_field:"):
+                    block_name = key.split(":", 1)[1]
+                    for field in self.parent_dialog.template.blocks:
+                        if field.name == block_name:
+                            for subfield in field.fields:
+                                subkey = f"block_field:{block_name}.{subfield.name}"
+                                sub_existing = self.parent_dialog.display_names.get(self.parent_dialog.tid, {}).get(subkey, {})
+                                if isinstance(sub_existing, str):
+                                    sub_existing = {"display": sub_existing}
+                                sub_existing["category"] = new_parent.text(0)
+                                self.parent_dialog.display_names.setdefault(self.parent_dialog.tid, {})[subkey] = sub_existing
+                            break
+        # Раскрываем новые родительские категории
+        for i in range(self.topLevelItemCount()):
+            self.expandItem(self.topLevelItem(i))
+        event.accept()
+
+    def dragEnterEvent(self, event):
+        event.accept()
+
+    def dragMoveEvent(self, event):
+        event.accept()
 
 class SettingsDialog(QDialog):
     def __init__(self, template, display_names, save_callback, parent=None):
@@ -25,11 +174,11 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         layout.addWidget(tabs)
 
-        # Вкладка 1: Имена, типы, форматы, суффиксы
+        # Вкладка 1: Имена, типы, форматы
         tab_names = QWidget()
         names_layout = QVBoxLayout(tab_names)
         names_layout.addWidget(QLabel("Двойной клик по ячейке для редактирования отображаемого имени.\n"
-                                      "Тип поля, формат и суффикс настраиваются отдельно."))
+                                      "Тип поля и формат выбираются из списков."))
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Поле / блок", "Отображаемое имя", "Тип", "Формат"])
         self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
@@ -37,16 +186,26 @@ class SettingsDialog(QDialog):
         names_layout.addWidget(self.tree)
         tabs.addTab(tab_names, "Имена, типы, форматы")
 
-        # Вкладка 2: Категории (без изменений)
+        # Вкладка 2: Категории (с drag&drop и группировкой)
         tab_cats = QWidget()
         cats_layout = QVBoxLayout(tab_cats)
+
+        cats_layout.addWidget(QLabel(
+            "Перетаскивайте поля и блоки между категориями, меняйте порядок категорий в левом списке.\n"
+            "Элементы можно также перетаскивать на названия категорий в левом списке."
+        ))
+        cats_layout.addSpacing(5)
+
         panel = QWidget()
         panel_layout = QHBoxLayout(panel)
-        self.cat_list = QListWidget()
-        self.cat_list.setDragDropMode(QListWidget.InternalMove)
+
+        # Левая часть: список категорий (можно перетаскивать для изменения порядка)
+        self.cat_list = CategoryListWidget()
+        self.cat_list.parent_dialog = self
         self.cat_list.setMaximumWidth(200)
         panel_layout.addWidget(self.cat_list)
 
+        # Кнопки управления категориями
         cat_btns = QVBoxLayout()
         add_btn = QPushButton("➕ Добавить")
         del_btn = QPushButton("🗑️ Удалить")
@@ -57,25 +216,30 @@ class SettingsDialog(QDialog):
         cat_btns.addStretch()
         panel_layout.addLayout(cat_btns)
 
-        self.items_list = QListWidget()
-        self.items_list.setSelectionMode(QListWidget.SingleSelection)
-        panel_layout.addWidget(self.items_list)
-        cats_layout.addWidget(panel)
+        # Правая часть: дерево элементов, сгруппированных по категориям
+        self.categories_tree = CategoryTreeWidget()
+        self.categories_tree.parent_dialog = self
+        self.categories_tree.setHeaderLabels(["Поля и блоки"])
+        self.categories_tree.setIndentation(20)
+        self.categories_tree.setDragDropMode(QTreeWidget.DragDrop)  # важно
+        self.categories_tree.setAcceptDrops(True)
+        self.categories_tree.setDragEnabled(True)
+        self.categories_tree.setDropIndicatorShown(True)
+        self.categories_tree.header().hide()
+        panel_layout.addWidget(self.categories_tree)
 
-        change_cat_btn = QPushButton("Изменить категорию выбранного элемента")
-        cats_layout.addWidget(change_cat_btn)
+        cats_layout.addWidget(panel)
         tabs.addTab(tab_cats, "Категории")
 
         # Загрузка данных
         self.load_categories()
         self.load_tree()
-        self.load_items()
+        self.load_items()  # загружает дерево категорий
 
         # Сигналы категорий
         add_btn.clicked.connect(self.add_category)
         del_btn.clicked.connect(self.delete_category)
         rename_btn.clicked.connect(self.rename_category)
-        change_cat_btn.clicked.connect(self.set_category)
 
         # Импорт/экспорт
         ie_layout = QHBoxLayout()
@@ -94,6 +258,13 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        # Настройка drag & drop
+        self.cat_list.setDragEnabled(True)
+        self.cat_list.setAcceptDrops(True)
+        self.cat_list.setDropIndicatorShown(True)
+        self.categories_tree.setDragEnabled(True)
+        self.categories_tree.setAcceptDrops(True)
 
     # ---------- Вспомогательные методы ----------
     def get_stored(self, key, subkey):
@@ -115,6 +286,7 @@ class SettingsDialog(QDialog):
     def get_stored_category(self, key):
         return self.get_stored(key, "category")
 
+    # ---------- Дерево имён, типов, форматов ----------
     def load_tree(self):
         self.tree.clear()
         # Простые поля
@@ -130,14 +302,11 @@ class SettingsDialog(QDialog):
             item.setData(0, Qt.UserRole, key)
             item.setFlags(item.flags() | Qt.ItemIsEditable)
 
-            # Тип
             type_combo = QComboBox()
             type_combo.addItems(["text", "number", "date", "bool", "image"])
             type_combo.setCurrentText(field_type)
             type_combo.currentTextChanged.connect(lambda t, it=item: self.on_type_changed(it, t))
             self.tree.setItemWidget(item, 2, type_combo)
-
-            # Формат (всегда комбобокс, но для не-date/number отключён)
             self.add_format_widget(item, field_type, field_format)
 
         # Блоки и их поля
@@ -173,20 +342,14 @@ class SettingsDialog(QDialog):
                 type_combo.setCurrentText(field_type)
                 type_combo.currentTextChanged.connect(lambda t, it=child: self.on_type_changed(it, t))
                 self.tree.setItemWidget(child, 2, type_combo)
-
                 self.add_format_widget(child, field_type, field_format)
 
         self.tree.expandAll()
 
     def on_type_changed(self, item, new_type):
-        """При изменении типа поля обновляем виджеты формата и суффикса"""
-        key = item.data(0, Qt.UserRole)
-        old_type = self.get_stored_type(key)
-        # Обновляем формат
         self.add_format_widget(item, new_type, "")
 
     def add_format_widget(self, item, field_type, current_format):
-        """Добавляет комбобокс формата в колонку 3 (индекс 3)"""
         combo = QComboBox()
         if field_type == "date":
             presets = [
@@ -213,12 +376,10 @@ class SettingsDialog(QDialog):
             for label, fmt in presets:
                 combo.setItemData(combo.findText(label), fmt)
         else:
-            # Для других типов – скрываем или отключаем
             self.tree.setItemWidget(item, 3, None)
             return
 
         if current_format:
-            # Ищем индекс по формату
             idx = -1
             for i in range(combo.count()):
                 if combo.itemData(i) == current_format:
@@ -248,7 +409,6 @@ class SettingsDialog(QDialog):
             else:
                 combo.setCurrentIndex(0)
         else:
-            # Для дат с русскими месяцами – предупреждение
             fmt = combo.currentData()
             if field_type == "date" and fmt and isinstance(fmt, str) and ('%B' in fmt or '%b' in fmt):
                 import locale
@@ -259,7 +419,7 @@ class SettingsDialog(QDialog):
                                         "Выбран формат даты с названием месяца, но русская локаль не установлена.\n"
                                         "Названия месяцев могут не отображаться. Рекомендуется использовать цифровой формат.")
 
-    # ---------- Категории (без изменений) ----------
+    # ---------- Категории ----------
     def load_categories(self):
         order = self.display_names.get(self.tid, {}).get("_categories_order", ["Без категории"])
         if "Без категории" not in order:
@@ -269,35 +429,44 @@ class SettingsDialog(QDialog):
             self.cat_list.addItem(cat)
 
     def load_items(self):
-        self.items_list.clear()
+        """Заполняет дерево категорий: корневые элементы – категории, дочерние – поля и блоки."""
+        self.categories_tree.clear()
+
+        order = self.display_names.get(self.tid, {}).get("_categories_order", ["Без категории"])
+        if "Без категории" not in order:
+            order.insert(0, "Без категории")
+
+        category_items = {}
+        for cat in order:
+            root_item = QTreeWidgetItem(self.categories_tree)
+            root_item.setText(0, cat)
+            root_item.setFlags(root_item.flags() | Qt.ItemIsEditable | Qt.ItemIsDropEnabled)
+            category_items[cat] = root_item
+
+        # Поля
         for field in self.template.fields:
             key = f"field:{field.name}"
-            cat = self.get_stored_category(key)
+            cat = self.get_stored_category(key) or "Без категории"
             display = self.get_stored_display(key) or field.name
-            text = f"{display} : {cat if cat else 'Без категории'}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, key)
-            self.items_list.addItem(item)
+            item = QTreeWidgetItem(category_items.get(cat, category_items["Без категории"]))
+            item.setText(0, display)
+            item.setData(0, Qt.UserRole, key)
+            item.setFlags(item.flags() | Qt.ItemIsDragEnabled | Qt.ItemIsSelectable)
+
+        # Блоки
         for block in self.template.blocks:
             key = f"block:{block.name}"
-            cat = self.get_stored_category(key)
+            cat = self.get_stored_category(key) or "Без категории"
             display = self.get_stored_display(key) or block.name
-            text = f"[Блок] {display} : {cat if cat else 'Без категории'}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, key)
-            self.items_list.addItem(item)
+            item = QTreeWidgetItem(category_items.get(cat, category_items["Без категории"]))
+            item.setText(0, f"[Блок] {display}")
+            item.setData(0, Qt.UserRole, key)
+            item.setFlags(item.flags() | Qt.ItemIsDragEnabled | Qt.ItemIsSelectable)
+
+        self.categories_tree.expandAll()
 
     def refresh_items(self):
-        for i in range(self.items_list.count()):
-            key = self.items_list.item(i).data(Qt.UserRole)
-            cat = self.get_stored_category(key)
-            text = self.items_list.item(i).text()
-            if " : " in text:
-                display_part = text.split(" : ")[0]
-            else:
-                display_part = ""
-            new_text = f"{display_part} : {cat if cat else 'Без категории'}"
-            self.items_list.item(i).setText(new_text)
+        self.load_items()
 
     def add_category(self):
         name, ok = QInputDialog.getText(self, "Новая категория", "Название:")
@@ -305,23 +474,47 @@ class SettingsDialog(QDialog):
             name = name.strip()
             if name not in [self.cat_list.item(i).text() for i in range(self.cat_list.count())]:
                 self.cat_list.addItem(name)
+                # Добавляем корневой элемент в дерево
+                root_item = QTreeWidgetItem(self.categories_tree)
+                root_item.setText(0, name)
+                root_item.setFlags(root_item.flags() | Qt.ItemIsEditable | Qt.ItemIsDropEnabled)
+                self.categories_tree.addTopLevelItem(root_item)
+                # Обновляем порядок категорий
+                self.update_categories_order()
+                self.refresh_items()  # перестроим, чтобы все элементы оказались под новыми категориями? проще перезагрузить
+                self.load_items()  # полная перезагрузка
 
     def delete_category(self):
         cur = self.cat_list.currentItem()
         if not cur:
             return
-        if cur.text() == "Без категории":
+        cat_name = cur.text()
+        if cat_name == "Без категории":
             QMessageBox.warning(self, "Ошибка", "Нельзя удалить 'Без категории'")
             return
-        cat_name = cur.text()
-        for i in range(self.items_list.count()):
-            key = self.items_list.item(i).data(Qt.UserRole)
-            data = self.display_names.get(self.tid, {}).get(key)
-            if isinstance(data, dict) and data.get("category") == cat_name:
-                data["category"] = ""
+        # Удаляем категорию из данных: все элементы этой категории переносим в "Без категории"
+        for i in range(self.categories_tree.topLevelItemCount()):
+            top_item = self.categories_tree.topLevelItem(i)
+            if top_item.text(0) == cat_name:
+                # Переносим всех детей в корневую категорию "Без категории"
+                # Находим корневую категорию "Без категории"
+                for j in range(self.categories_tree.topLevelItemCount()):
+                    if self.categories_tree.topLevelItem(j).text(0) == "Без категории":
+                        default_root = self.categories_tree.topLevelItem(j)
+                        while top_item.childCount():
+                            child = top_item.child(0)
+                            top_item.removeChild(child)
+                            default_root.addChild(child)
+                        break
+                self.categories_tree.takeTopLevelItem(i)
+                break
+        # Удаляем из cat_list
         row = self.cat_list.row(cur)
         self.cat_list.takeItem(row)
-        self.refresh_items()
+        # Обновляем порядок
+        self.update_categories_order()
+        # Перезагружаем дерево (чтобы обновить категории у элементов)
+        self.load_items()
 
     def rename_category(self):
         cur = self.cat_list.currentItem()
@@ -337,68 +530,35 @@ class SettingsDialog(QDialog):
             if new in [self.cat_list.item(i).text() for i in range(self.cat_list.count())]:
                 QMessageBox.warning(self, "Ошибка", "Категория уже существует")
                 return
+            # Переименовываем в cat_list
             cur.setText(new)
-            for i in range(self.items_list.count()):
-                key = self.items_list.item(i).data(Qt.UserRole)
-                data = self.display_names.get(self.tid, {}).get(key)
-                if isinstance(data, dict) and data.get("category") == old:
-                    data["category"] = new
-            self.refresh_items()
+            # Переименовываем корневой элемент в дереве
+            for i in range(self.categories_tree.topLevelItemCount()):
+                if self.categories_tree.topLevelItem(i).text(0) == old:
+                    self.categories_tree.topLevelItem(i).setText(0, new)
+                    break
+            # Обновляем в данных все элементы, у которых была эта категория
+            for key in self.display_names.get(self.tid, {}).copy():
+                if self.get_stored_category(key) == old:
+                    existing = self.display_names[self.tid].get(key, {})
+                    if isinstance(existing, dict):
+                        existing["category"] = new
+            # Обновляем порядок
+            self.update_categories_order()
+            self.load_items()
 
-    def set_category(self):
-        cur = self.items_list.currentItem()
-        if not cur:
-            QMessageBox.warning(self, "Ошибка", "Выберите элемент из списка")
-            return
-        key = cur.data(Qt.UserRole)
-        current_cat = self.get_stored_category(key)
-        categories = [self.cat_list.item(i).text() for i in range(self.cat_list.count())]
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Выбор категории")
-        dlg_layout = QVBoxLayout(dlg)
-        combo = QComboBox()
-        combo.addItems(categories)
-        idx = combo.findText(current_cat)
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
-        dlg_layout.addWidget(combo)
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        dlg_layout.addWidget(btns)
-        if dlg.exec() == QDialog.Accepted:
-            new_cat = combo.currentText()
-            existing = self.display_names.get(self.tid, {}).get(key, {})
-            if isinstance(existing, str):
-                existing = {"display": existing, "category": new_cat, "type": "text"}
-            elif not isinstance(existing, dict):
-                existing = {}
-            existing["category"] = new_cat
-            self.display_names.setdefault(self.tid, {})[key] = existing
-            if key.startswith("block:") and not key.startswith("block_field:"):
-                block_name = key.split(":", 1)[1]
-                for field in self.template.blocks:
-                    if field.name == block_name:
-                        for subfield in field.fields:
-                            subkey = f"block_field:{block_name}.{subfield.name}"
-                            sub_existing = self.display_names.get(self.tid, {}).get(subkey, {})
-                            if isinstance(sub_existing, str):
-                                sub_existing = {"display": sub_existing, "category": new_cat, "type": "text"}
-                            elif not isinstance(sub_existing, dict):
-                                sub_existing = {}
-                            sub_existing["category"] = new_cat
-                            self.display_names[self.tid][subkey] = sub_existing
-            self.refresh_items()
+    def update_categories_order(self):
+        """Сохраняет порядок категорий из cat_list в настройки."""
+        order = [self.cat_list.item(i).text() for i in range(self.cat_list.count())]
+        self.display_names.setdefault(self.tid, {})["_categories_order"] = order
 
     # ---------- Импорт/экспорт ----------
     def do_export(self):
-        # Сохраняем настройки, привязанные к имени файла (без расширения)
         export_data = {
             "template_name": os.path.splitext(os.path.basename(self.template.file_path))[0],
             "settings": self.display_names.get(self.tid, {})
         }
-        path, _ = QFileDialog.getSaveFileName(self, "Экспорт настроек", f"{self.template.name}_settings.json",
-                                              "JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт настроек", f"{self.template.name}_settings.json", "JSON (*.json)")
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(export_data, f, ensure_ascii=False, indent=2)
@@ -425,17 +585,16 @@ class SettingsDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        # Применяем настройки к данным
         self.display_names[self.tid] = settings
-        # Обновляем главное окно (форму)
         self.save_callback(self.display_names)
-        # Обновляем интерфейс самого диалога настроек
-        self.load_tree()  # перестраивает дерево с именами, типами, форматами
-        self.load_categories()  # обновляет список категорий
-        self.load_items()  # обновляет список элементов для категорий
+        self.load_tree()
+        self.load_categories()
+        self.load_items()
         QMessageBox.information(self, "Импорт", "Настройки успешно импортированы.")
+
     # ---------- Сохранение ----------
     def accept(self):
+        # Сохраняем имена, типы, форматы из дерева self.tree
         def save_tree_item(item):
             key = item.data(0, Qt.UserRole)
             if not key:
@@ -443,8 +602,6 @@ class SettingsDialog(QDialog):
             display = item.text(1).strip()
             type_widget = self.tree.itemWidget(item, 2)
             field_type = type_widget.currentText() if type_widget else "text"
-
-            # Формат – колонка 3
             format_widget = self.tree.itemWidget(item, 3)
             field_format = ""
             if format_widget and isinstance(format_widget, QComboBox):
@@ -453,7 +610,6 @@ class SettingsDialog(QDialog):
                     field_format = fmt_data
                 else:
                     field_format = format_widget.currentData()
-
             existing = self.display_names.get(self.tid, {}).get(key, {})
             if isinstance(existing, str):
                 existing = {"display": existing}
@@ -468,7 +624,6 @@ class SettingsDialog(QDialog):
                 existing["format"] = field_format
             else:
                 existing.pop("format", None)
-
             if existing:
                 self.display_names.setdefault(self.tid, {})[key] = existing
             else:
@@ -483,5 +638,36 @@ class SettingsDialog(QDialog):
         order = [self.cat_list.item(i).text() for i in range(self.cat_list.count())]
         self.display_names.setdefault(self.tid, {})["_categories_order"] = order
 
+        # Сохраняем категории на основе дерева categories_tree
+        root_count = self.categories_tree.topLevelItemCount()
+        for i in range(root_count):
+            category_item = self.categories_tree.topLevelItem(i)
+            category_name = category_item.text(0)
+            for j in range(category_item.childCount()):
+                child = category_item.child(j)
+                key = child.data(0, Qt.UserRole)
+                if key:
+                    existing = self.display_names.get(self.tid, {}).get(key, {})
+                    if isinstance(existing, str):
+                        existing = {"display": existing}
+                    existing["category"] = category_name
+                    self.display_names.setdefault(self.tid, {})[key] = existing
+
         self.save_callback(self.display_names)
         super().accept()
+
+    def update_categories_from_tree(self):
+        """Обновляет категории в display_names на основе текущего состояния дерева."""
+        root_count = self.categories_tree.topLevelItemCount()
+        for i in range(root_count):
+            category_item = self.categories_tree.topLevelItem(i)
+            category_name = category_item.text(0)
+            for j in range(category_item.childCount()):
+                child = category_item.child(j)
+                key = child.data(0, Qt.UserRole)
+                if key:
+                    existing = self.display_names.get(self.tid, {}).get(key, {})
+                    if isinstance(existing, str):
+                        existing = {"display": existing}
+                    existing["category"] = category_name
+                    self.display_names.setdefault(self.tid, {})[key] = existing

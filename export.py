@@ -57,8 +57,17 @@ def build_exe():
         "--onedir",
         "--windowed",
         f"--name={APP_NAME}",
-        f"--icon={ICON_PATH}",
+        f"--icon={ICON_PATH}"
     ]
+
+    cmd.extend([
+        "--collect-data", "certifi",
+        "--hidden-import", "ssl",
+        "--hidden-import", "cryptography",
+        "--hidden-import", "OpenSSL",
+        "--hidden-import", "PySide6.QtNetwork",
+    ])
+
     # Добавляем данные
     for d in DATA_DIRS:
         cmd.append(f"--add-data={d};{d}")

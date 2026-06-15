@@ -171,7 +171,7 @@ class HelperDialog(QDialog):
     def setup_conditional_tab(self):
         layout = QVBoxLayout(self.cond_tab)
 
-        # Основной блок if
+        # Блок if
         if_group = QGroupBox("Условие if")
         if_layout = QFormLayout(if_group)
         self.if_var_edit = QLineEdit()
@@ -193,7 +193,7 @@ class HelperDialog(QDialog):
         self.elif_container = QWidget()
         self.elif_layout = QVBoxLayout(self.elif_container)
         self.elif_layout.setContentsMargins(0, 0, 0, 0)
-        self.elif_frames = []  # (frame, var_edit, op_combo, val_edit, text_edit)
+        self.elif_frames = []
         layout.addWidget(QLabel("Дополнительные условия (elif):"))
         layout.addWidget(self.elif_container)
 
@@ -225,13 +225,15 @@ class HelperDialog(QDialog):
 
         layout.addStretch()
 
-        # Сигналы для обновления предпросмотра
+        # Сигналы обновления предпросмотра
         self.if_var_edit.textChanged.connect(self.update_cond_preview)
         self.if_op_combo.currentTextChanged.connect(self.update_cond_preview)
         self.if_val_edit.textChanged.connect(self.update_cond_preview)
         self.if_text_edit.textChanged.connect(self.update_cond_preview)
-        self.else_check.stateChanged.connect(self.update_cond_preview)
         self.else_text_edit.textChanged.connect(self.update_cond_preview)
+
+        # Установка начального состояния
+        self.on_else_toggled(self.else_check.isChecked())
 
     def add_elif_block(self):
         frame = QFrame()
@@ -280,7 +282,9 @@ class HelperDialog(QDialog):
         self.update_cond_preview()
 
     def on_else_toggled(self, state):
-        self.else_text_edit.setEnabled(state == Qt.Checked)
+        enabled = (state == 2)
+        self.else_text_edit.setEnabled(enabled)
+        self.else_text_edit.repaint()
         self.update_cond_preview()
 
     def update_cond_preview(self):

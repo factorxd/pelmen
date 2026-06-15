@@ -5,6 +5,7 @@ import tempfile
 import shutil
 import sys
 from datetime import datetime
+import ssl
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -12,8 +13,9 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QDateEdit,
     QDialog, QDoubleSpinBox, QTextEdit, QApplication, QMenu, QTextBrowser
 )
-from PySide6.QtCore import Qt, QDir, QDate, QSortFilterProxyModel, QTimer
+from PySide6.QtCore import Qt, QDir, QSortFilterProxyModel, QTimer, QByteArray, QUrl
 from PySide6.QtGui import QAction, QIcon, QPalette, QColor
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from ui.form_builder import FormBuilder
 
@@ -70,9 +72,20 @@ class MainWindow(QMainWindow):
 
         self.light_palette = QApplication.instance().palette()
 
+        self.network_manager = QNetworkAccessManager(self)
+
         self.load_display_names()
         self.init_ui()
         self.load_settings()
+        # Восстанавливаем геометрию окна
+        if "window_geometry" in self.settings:
+            try:
+                geom_b64 = self.settings["window_geometry"]
+                geom_bytes = QByteArray.fromBase64(geom_b64.encode('ascii'))
+                self.restoreGeometry(geom_bytes)
+            except:
+                pass  # если что-то пошло не так, используем размер по умолчанию
+
         self.draft_interval_seconds = self.settings.get("draft_interval", 0.5)
         self.apply_font_size(self.settings.get("font_size", "Средний"))
         if self.root_folder:
@@ -97,14 +110,6 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("Файл")
         open_folder_action = file_menu.addAction("Открыть папку с шаблонами")
         open_folder_action.triggered.connect(self.open_templates_folder)
-        helper_action = file_menu.addAction("Помощник разметки")
-        helper_action.triggered.connect(self.open_helper)
-        presets_action = file_menu.addAction("Пресеты")
-        presets_action.triggered.connect(self.open_presets)
-        mass_btn = file_menu.addAction("Массовая генерация из CSV/Excel")
-        mass_btn.triggered.connect(self.mass_generate)
-        preview_action = file_menu.addAction("Предпросмотр документа")
-        preview_action.triggered.connect(self.preview_document)
         settings_action = file_menu.addAction("Настройки")
         settings_action.triggered.connect(self.open_settings_program)
         exit_action = file_menu.addAction("Выход")
@@ -115,6 +120,35 @@ class MainWindow(QMainWindow):
         help_action.triggered.connect(self.show_help)
         about_action = help_menu.addAction("О программе")
         about_action.triggered.connect(self.show_about)
+
+        toolbar = self.addToolBar("Инструменты")
+        toolbar.setMovable(False)
+
+        # Помощник разметки
+        helper_action_tb = QAction("🧩", self)
+        helper_action_tb.setToolTip("Помощник разметки (Ctrl+N)")
+        helper_action_tb.triggered.connect(self.open_helper)
+        toolbar.addAction(helper_action_tb)
+
+        # Пресеты
+        presets_action_tb = QAction("📋", self)
+        presets_action_tb.setToolTip("Пресеты")
+        presets_action_tb.triggered.connect(self.open_presets)
+        toolbar.addAction(presets_action_tb)
+
+        # Массовая генерация
+        mass_action_tb = QAction("📊", self)
+        mass_action_tb.setToolTip("Массовая генерация (Ctrl+Shift+G)")
+        mass_action_tb.triggered.connect(self.mass_generate)
+        toolbar.addAction(mass_action_tb)
+
+        # Предпросмотр
+        preview_action_tb = QAction("👁️", self)
+        preview_action_tb.setToolTip("Предпросмотр документа (Ctrl+Shift+S)")
+        preview_action_tb.triggered.connect(self.preview_document)
+        toolbar.addAction(preview_action_tb)
+
+        toolbar.addSeparator()
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -632,7 +666,7 @@ class MainWindow(QMainWindow):
         </style></head>
         <body>
         <h2>Пельмень</h2>
-        <p><b>Версия 1.3</b></p>
+        <p><b>Версия 1.3.1</b></p>
         <p>© 2026</p>
         <p>Простой шаблонизатор документов</p>
         <p>Сделано на Python + PySide6<br>
@@ -756,59 +790,112 @@ class MainWindow(QMainWindow):
             line_edit.setText(path)
 
     def check_for_updates(self, manual=False):
-        from PySide6.QtCore import QThread, Signal
-        import json
-        import urllib.request
+        # Отменяем предыдущий таймаут
+        if hasattr(self, '_update_timer'):
+            self._update_timer.stop()
+        # Безопасно удаляем старый реплай
+        old_reply = getattr(self, 'current_reply', None)
+        if old_reply is not None:
+            old_reply.abort()
+            old_reply.deleteLater()
+            self.current_reply = None
 
-        class UpdateThread(QThread):
-            result_signal = Signal(dict)
-            error_signal = Signal(str)
+        # Создаём запрос
+        url = QUrl("https://api.github.com/repos/factorxd/pelmen/releases/latest")
+        request = QNetworkRequest(url)
+        request.setHeader(QNetworkRequest.UserAgentHeader, "Pelmen/1.3.1")
 
-            def run(self):
-                try:
-                    req = urllib.request.Request(
-                        "https://api.github.com/repos/factorxd/pelmen/releases/latest",
-                        headers={"User-Agent": "Pelmen"}
-                    )
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        if response.status == 200:
-                            data = json.loads(response.read().decode())
-                            self.result_signal.emit(data)
-                        else:
-                            self.error_signal.emit(f"HTTP {response.status}")
-                except Exception as e:
-                    self.error_signal.emit(str(e))
+        self.current_reply = self.network_manager.get(request)
+        self.current_reply.finished.connect(self._on_update_check_finished)
+        self.current_reply.sslErrors.connect(self._on_ssl_errors_occurred)
 
-        def version_tuple(v):
-            # Преобразует строку версии "1.2.3" в кортеж (1,2,3)
-            return tuple(map(int, v.split('.')))
+        self._update_timer = QTimer()
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._on_update_check_timeout)
+        self._update_timer.start(15000)
 
-        def on_result(data):
-            latest_tag = data.get("tag_name", "").lstrip('v')
-            current_version = "1.3"
+        self._is_manual_check = manual
+
+    def _on_update_check_finished(self):
+        reply = self.current_reply
+        self.current_reply = None  # сразу обнуляем, чтобы таймаут не тронул
+
+        if reply is None:
+            return
+
+        # Проверяем HTTP статус
+        status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+        if status_code and status_code != 200:
+            if self._is_manual_check:
+                QMessageBox.warning(self, "Ошибка",
+                                    f"Сервер вернул код {status_code}.\n"
+                                    "Возможно, временная проблема GitHub API.\n"
+                                    "Проверьте обновления вручную на сайте.")
+            reply.deleteLater()
+            return
+
+        if reply.error() == QNetworkReply.NoError:
+            data = reply.readAll().data().decode('utf-8')
             try:
-                if version_tuple(latest_tag) > version_tuple(current_version):
-                    reply = QMessageBox.question(self, "Обновление",
-                                                 f"Доступна новая версия {latest_tag}\nПерейти на страницу загрузки?",
-                                                 QMessageBox.Yes | QMessageBox.No)
-                    if reply == QMessageBox.Yes:
-                        import webbrowser
-                        webbrowser.open(data.get("html_url"))
-                elif manual:
-                    QMessageBox.information(self, "Обновления", f"У вас последняя версия {current_version}")
-            except ValueError:
-                # Если версия в неправильном формате
-                if manual:
-                    QMessageBox.warning(self, "Ошибка", "Не удалось определить версии для сравнения.")
+                release_info = json.loads(data)
+                latest_version = release_info.get("tag_name", "").lstrip('v')
+                self._process_update_response(latest_version)
+            except json.JSONDecodeError as e:
+                if self._is_manual_check:
+                    snippet = data[:200] + "..." if len(data) > 200 else data
+                    QMessageBox.warning(self, "Ошибка",
+                                        f"Не удалось обработать ответ сервера:\n{e}\n\n"
+                                        f"Получено:\n{snippet}\n\n"
+                                        "Проверьте обновления вручную на сайте GitHub.")
+                else:
+                    print(f"Update check JSON error: {e}")
+        else:
+            error_string = reply.errorString()
+            if self._is_manual_check:
+                QMessageBox.warning(self, "Ошибка сети",
+                                    f"Не удалось проверить обновления.\n\nОшибка: {error_string}\n\n"
+                                    "Проверьте подключение к интернету или повторите позже.")
 
-        def on_error(error_msg):
-            if manual:
-                QMessageBox.warning(self, "Ошибка", f"Не удалось проверить обновления:\n{error_msg}")
+        reply.deleteLater()
 
-        self.update_thread = UpdateThread()
-        self.update_thread.result_signal.connect(on_result)
-        self.update_thread.error_signal.connect(on_error)
-        self.update_thread.start()
+    def _on_update_check_timeout(self):
+        reply = self.current_reply
+        if reply is not None:
+            self.current_reply = None
+            reply.abort()
+            reply.deleteLater()
+            if self._is_manual_check:
+                QMessageBox.warning(self, "Ошибка",
+                                    "Не удалось проверить обновления: истекло время ожидания ответа от сервера.")
+
+    def _on_ssl_errors_occurred(self, errors):
+        """Игнорируем ошибки SSL, так как GitHub API доверенный."""
+        if self.current_reply:
+            self.current_reply.ignoreSslErrors()
+
+    def _process_update_response(self, latest_version):
+        current_version = "1.3.1"
+        try:
+            # Преобразуем версии в кортежи для сравнения
+            def vtuple(v):
+                return tuple(map(int, v.split('.')))
+
+            if vtuple(latest_version) > vtuple(current_version):
+                reply = QMessageBox.question(
+                    self,
+                    "Доступно обновление",
+                    f"Доступна новая версия {latest_version}!\n\nПерейти на страницу загрузки?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    import webbrowser
+                    webbrowser.open("https://github.com/factorxd/pelmen/releases/latest")
+            elif self._is_manual_check:
+                QMessageBox.information(self, "Обновлений не найдено",
+                                        f"У вас установлена последняя версия ({current_version}).")
+        except Exception as e:
+            if self._is_manual_check:
+                QMessageBox.warning(self, "Ошибка", f"Не удалось сравнить версии:\n{e}")
 
     def manual_check_updates(self):
         self.check_for_updates(manual=True)
@@ -831,3 +918,11 @@ class MainWindow(QMainWindow):
         # Перестраиваем текущую форму, чтобы обновить виджеты
         if self.current_template:
             self.build_form()
+
+    def closeEvent(self, event):
+        # Сохраняем геометрию окна
+        geometry_bytes = self.saveGeometry()
+        geometry_b64 = geometry_bytes.toBase64().data().decode('ascii')
+        self.settings["window_geometry"] = geometry_b64
+        self.save_settings()
+        event.accept()
