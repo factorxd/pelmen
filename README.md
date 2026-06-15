@@ -2,7 +2,7 @@
 
 **Пельмень** — это десктопное приложение для Windows, которое позволяет создавать документы из шаблонов Word, подставляя данные из удобной формы. Идеально для договоров, накладных, сертификатов и любых повторяющихся документов.
 
-![Версия](https://img.shields.io/badge/version-1.3-blue) ![Python](https://img.shields.io/badge/python-3.13-green) ![PySide6](https://img.shields.io/badge/PySide6-6.11-orange)
+![Версия](https://img.shields.io/badge/version-1.3.1-blue) ![Python](https://img.shields.io/badge/python-3.13-green) ![PySide6](https://img.shields.io/badge/PySide6-6.11-orange)
 
 ## ✨ Возможности
 
