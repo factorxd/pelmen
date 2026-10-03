@@ -3,27 +3,48 @@ import os
 import tempfile
 import zipfile
 import pandas as pd
+from logic.format_utils import format_date, format_number
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QWidget,
     QLabel, QProgressBar, QMessageBox, QGroupBox, QFormLayout,
-    QRadioButton, QLineEdit, QCheckBox, QScrollArea
+    QRadioButton, QLineEdit, QCheckBox, QScrollArea, QSplitter
 )
+from PySide6.QtCore import Qt, QThread
+from ui.mass_generate_worker import MassGenerateWorker
+
+class NoWheelComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
+        return
 
 class MassGenerateDialog(QDialog):
     def __init__(self, template, parent=None):
         super().__init__(parent)
         self.template = template
         self.setWindowTitle(f"Массовая генерация: {template.name}")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(600, 400)
+        self.setSizeGripEnabled(True)
         self.df = None
         self.columns = []
         self.all_fields = []
         self.field_mapping = {}
+        self.worker = None
+        self.worker_thread = None
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(scroll)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        scroll.setWidget(inner)
 
         # Группа загрузки файла
         file_group = QGroupBox("1. Выберите файл (CSV или Excel)")
@@ -34,10 +55,15 @@ class MassGenerateDialog(QDialog):
         file_layout.addWidget(self.select_btn)
         layout.addWidget(file_group)
 
-        # Таблица предпросмотра
+        # Таблица предпросмотра и группа сопоставления — в одном сплиттере,
+        # чтобы пользователь мог перетаскивать границу между ними.
+        self.preview_splitter = QSplitter(Qt.Vertical)
+        self.preview_splitter.setChildrenCollapsible(False)
+
         self.table = QTableWidget()
         self.table.setVisible(False)
-        layout.addWidget(self.table)
+        self.table.setMinimumHeight(100)
+        self.preview_splitter.addWidget(self.table)
 
         # Группа сопоставления колонок
         self.mapping_group = QGroupBox("2. Сопоставьте колонки с полями шаблона")
@@ -53,14 +79,24 @@ class MassGenerateDialog(QDialog):
         # Scroll area для компактности
         self.mapping_scroll = QScrollArea()
         self.mapping_scroll.setWidgetResizable(True)
-        self.mapping_scroll.setMaximumHeight(300)  # можно подобрать по вкусу
+        # Скролл может свободно расти и сжиматься, но не в ноль.
+        # Никаких setMaximumHeight — размером управляет сплиттер.
+        self.mapping_scroll.setMinimumHeight(80)
+        from PySide6.QtWidgets import QSizePolicy
+        self.mapping_scroll.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding
+        )
         mapping_scroll_widget = QWidget()
         self.mapping_form_layout = QFormLayout(mapping_scroll_widget)
         self.mapping_form_layout.setVerticalSpacing(5)
         self.mapping_scroll.setWidget(mapping_scroll_widget)
         mapping_layout.addWidget(self.mapping_scroll)
 
-        layout.addWidget(self.mapping_group)
+        self.preview_splitter.addWidget(self.mapping_group)
+        self.preview_splitter.setStretchFactor(0, 0)  # таблица — не тянется
+        self.preview_splitter.setStretchFactor(1, 1)  # mapping — тянется
+        self.preview_splitter.setSizes([200, 400])
+        layout.addWidget(self.preview_splitter, 1)
 
         # Инициализация списка виджетов
         self.mapping_widgets = []
@@ -81,9 +117,10 @@ class MassGenerateDialog(QDialog):
 
         # Маска имени файла
         mask_layout = QHBoxLayout()
-        mask_layout.addWidget(QLabel("Шаблон имени файла:"))
+        self.name_mask_label = QLabel("Шаблон имени файла:")
         self.name_mask_edit = QLineEdit()
         self.name_mask_edit.setPlaceholderText("например: Счет_{doc_number}_{client_name}")
+        mask_layout.addWidget(self.name_mask_label)
         mask_layout.addWidget(self.name_mask_edit)
         settings_layout.addLayout(mask_layout)
 
@@ -92,7 +129,16 @@ class MassGenerateDialog(QDialog):
         self.zip_check.setChecked(True)
         settings_layout.addWidget(self.zip_check)
 
+        # Скрываем маску и ZIP в single-режиме
+        self.single_file_radio.toggled.connect(self._on_mode_changed)
+        self.multi_file_radio.toggled.connect(self._on_mode_changed)
+        self._on_mode_changed()
+
         layout.addWidget(self.settings_group)
+
+        self.phase_label = QLabel()
+        self.phase_label.setVisible(False)
+        layout.addWidget(self.phase_label)
 
         # Прогресс
         self.progress = QProgressBar()
@@ -117,7 +163,10 @@ class MassGenerateDialog(QDialog):
     def load_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Выберите файл", "",
-            "CSV files (*.csv);;Excel files (*.xlsx *.xls)"
+            "Excel и CSV (*.xlsx *.xls *.xlsm *.csv);;"
+            "Excel (*.xlsx *.xls *.xlsm);;"
+            "CSV (*.csv);;"
+            "Все файлы (*)"
         )
         if not file_path:
             return
@@ -133,6 +182,7 @@ class MassGenerateDialog(QDialog):
         if self.df.empty:
             QMessageBox.critical(self, "Ошибка", "Файл пуст")
             return
+        self.df.columns = [str(c) for c in self.df.columns]
         self.columns = list(self.df.columns)
         self.show_preview()
         self.setup_mapping()
@@ -152,153 +202,135 @@ class MassGenerateDialog(QDialog):
                 item = QTableWidgetItem(str(row[col]))
                 self.table.setItem(i, j, item)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setMaximumHeight(200)
 
     def setup_mapping(self):
         self.rebuild_mapping_ui()
         self.auto_select_mapping()
 
     def generate(self):
-        from logic.doc_generator import generate_docx
-
         if self.df is None:
             return
         mapping = {}
         for col, combo in self.mapping_widgets:
             data = combo.currentData()
             if data is not None:
-                typ, field_name = data
-                mapping[col] = (typ, field_name)
+                mapping[col] = data
         if not mapping:
-            QMessageBox.warning(self, "Ошибка", "Не выбрано ни одного сопоставления колонок")
+            QMessageBox.warning(self, "Ошибка",
+                                "Не выбрано ни одного сопоставления колонок")
             return
 
-        total_rows = len(self.df)
+        # 1. Определяем режим и спрашиваем путь ДО старта
+        if self.single_file_radio.isChecked():
+            mode = "single"
+            output_path, _ = QFileDialog.getSaveFileName(
+                self, "Сохранить документ",
+                f"{self.template.name}_merged.docx",
+                "Word files (*.docx)")
+            if not output_path:
+                return
+            name_mask = ""
+        else:
+            name_mask = self.name_mask_edit.text().strip()
+            if self.zip_check.isChecked():
+                mode = "multi_zip"
+                output_path, _ = QFileDialog.getSaveFileName(
+                    self, "Сохранить архив",
+                    f"{self.template.name}_mass.zip",
+                    "ZIP files (*.zip)")
+                if not output_path:
+                    return
+            else:
+                mode = "multi_folder"
+                output_path = QFileDialog.getExistingDirectory(
+                    self, "Выберите папку для сохранения")
+                if not output_path:
+                    return
+
+        # 2. UI: блокируем кнопки, показываем прогресс
+        self.phase_label.setText("Генерация документов…")
+        self.phase_label.setVisible(True)
         self.progress.setVisible(True)
-        self.progress.setMaximum(total_rows)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
         self.generate_btn.setEnabled(False)
 
-        # Определяем режим генерации
-        single_file = self.single_file_radio.isChecked()
-        name_mask = self.name_mask_edit.text().strip()
-        create_zip = self.zip_check.isChecked() if not single_file else False
+        # 3. Worker + thread
+        self.worker = MassGenerateWorker(
+            template=self.template,
+            df=self.df,
+            mapping=mapping,
+            mode=mode,
+            output_path=output_path,
+            name_mask=name_mask,
+            get_field_info=self.get_field_info,
+            format_value=self.format_value,
+        )
+        self.worker_thread = QThread(self)
+        self.worker_thread = QThread(self)
+        self.worker.moveToThread(self.worker_thread)
 
-        if single_file:
-            from docx import Document
-            from docxcompose.composer import Composer
-            import shutil
+        self.worker_thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.phase_changed.connect(self._on_phase_changed)
+        self.worker.finished.connect(self._on_finished)
+        self.worker.error.connect(self._on_error)
+        self.worker.cancelled.connect(self._on_cancelled)
 
-            doc_list = []
-            for idx, row in self.df.iterrows():
-                data_dict = {}
-                for col, (typ, field_name) in mapping.items():
-                    value = row[col]
-                    if pd.isna(value):
-                        value = ""
-                    # Получаем информацию о поле (тип, формат, суффикс)
-                    field_info = self.get_field_info(field_name)
-                    # Применяем форматирование (дата, число)
-                    data_dict[field_name] = self.format_value(value, field_info)
-                # Блоки пока игнорируем (если нужны — доработать)
-                for block in self.template.blocks:
-                    if block.name not in data_dict:
-                        data_dict[block.name] = []
-                # Генерируем временный DOCX
-                with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp2:
-                    part_path = tmp2.name
-                try:
-                    from logic.doc_generator import generate_docx
-                    generate_docx(self.template.file_path, data_dict, part_path)
-                except Exception as e:
-                    QMessageBox.critical(self, "Ошибка", f"Ошибка в строке {idx + 1}:\n{str(e)}")
-                    return
-                # Добавляем разрыв страницы в конец каждого документа (кроме последнего, добавим позже)
-                # Сделаем это после объединения, но проще добавить разрыв в сам временный файл
-                if idx < total_rows - 1:  # не последний
-                    doc = Document(part_path)
-                    doc.add_page_break()
-                    doc.save(part_path)
-                doc_list.append(part_path)
-                self.progress.setValue(idx + 1)
+        self.worker.finished.connect(self.worker_thread.quit)
+        self.worker.error.connect(self.worker_thread.quit)
+        self.worker.cancelled.connect(self.worker_thread.quit)
+        self.worker_thread.finished.connect(self.worker.deleteLater)
+        self.worker_thread.finished.connect(self.worker_thread.deleteLater)
+        self.worker_thread.finished.connect(self._on_thread_finished)
 
-            if doc_list:
-                # Объединяем документы
-                first_doc = Document(doc_list[0])
-                composer = Composer(first_doc)
-                for path in doc_list[1:]:
-                    next_doc = Document(path)
-                    composer.append(next_doc)
-                # Сохраняем результат
-                final_path = doc_list[0]
-                composer.save(final_path)
+        self.worker_thread.start()
 
-                save_path, _ = QFileDialog.getSaveFileName(
-                    self, "Сохранить документ",
-                    f"{self.template.name}_merged.docx",
-                    "Word files (*.docx)"
-                )
-                if save_path:
-                    shutil.move(final_path, save_path)
-                    QMessageBox.information(self, "Успех", f"Документ сохранён:\n{save_path}")
-                else:
-                    for p in doc_list:
-                        os.unlink(p)
-        else:
-            # Несколько файлов
-            with tempfile.TemporaryDirectory() as tmpdir:
-                output_files = []
-                for idx, row in self.df.iterrows():
-                    data_dict = {}
-                    for col, (typ, field_name) in mapping.items():
-                        value = row[col]
-                        if pd.isna(value):
-                            value = ""
-                        data_dict[field_name] = str(value)
-                    for block in self.template.blocks:
-                        if block.name not in data_dict:
-                            data_dict[block.name] = []
-                    # Генерируем имя файла по маске
-                    if name_mask:
-                        try:
-                            # Простая замена {field} на значение
-                            fname = name_mask
-                            for field_name in data_dict:
-                                fname = fname.replace(f"{{{field_name}}}", str(data_dict[field_name]))
-                            # Удаляем недопустимые символы
-                            fname = "".join(c for c in fname if c.isalnum() or c in "._- ")
-                        except:
-                            fname = f"doc_{idx+1}"
-                    else:
-                        fname = f"doc_{idx+1}"
-                    out_path = os.path.join(tmpdir, f"{fname}.docx")
-                    try:
-                        generate_docx(self.template.file_path, data_dict, out_path)
-                        output_files.append(out_path)
-                    except Exception as e:
-                        QMessageBox.critical(self, "Ошибка", f"Ошибка в строке {idx+1}:\n{str(e)}")
-                        self.progress.setVisible(False)
-                        self.generate_btn.setEnabled(True)
-                        return
-                    self.progress.setValue(idx+1)
-                if create_zip:
-                    zip_path, _ = QFileDialog.getSaveFileName(self, "Сохранить архив", f"{self.template.name}_mass.zip", "ZIP files (*.zip)")
-                    if zip_path:
-                        with zipfile.ZipFile(zip_path, 'w') as zipf:
-                            for fpath in output_files:
-                                zipf.write(fpath, os.path.basename(fpath))
-                        QMessageBox.information(self, "Успех", f"Создано {len(output_files)} документов\nСохранено в {zip_path}")
-                    else:
-                        QMessageBox.warning(self, "Отменено", "Архив не сохранён")
-                else:
-                    folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
-                    if folder:
-                        import shutil
-                        for fpath in output_files:
-                            shutil.move(fpath, os.path.join(folder, os.path.basename(fpath)))
-                        QMessageBox.information(self, "Успех", f"Сохранено {len(output_files)} документов в папку {folder}")
-                    else:
-                        QMessageBox.warning(self, "Отменено", "Сохранение отменено")
+    def _on_progress(self, current, total):
+        if total <= 0:
+            return
+        percent = int(current * 100 / total)
+        self.progress.setValue(percent)
+
+    def _on_mode_changed(self):
+        is_single = self.single_file_radio.isChecked()
+        # В single-режиме маска имени и ZIP не имеют смысла
+        self.name_mask_label.setVisible(not is_single)
+        self.name_mask_edit.setVisible(not is_single)
+        self.zip_check.setVisible(not is_single)
+
+    def _on_phase_changed(self, phase):
+        if phase == "generating":
+            self.phase_label.setText("Генерация документов…")
+        elif phase == "merging":
+            self.phase_label.setText("Объединение документов…")
+        elif phase == "saving":
+            self.phase_label.setText("Сохранение…")
+
+    def _on_finished(self, message, count):
+        QMessageBox.information(self, "Успех", message)
         self.accept()
+
+    def _on_error(self, message, row_idx):
+        QMessageBox.critical(self, "Ошибка", message)
+
+    def _on_cancelled(self):
+        QMessageBox.information(self, "Отменено", "Генерация отменена.")
+
+    def _on_thread_finished(self):
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setVisible(False)
+        self.phase_label.setVisible(False)
+        self.generate_btn.setEnabled(True)
+        self.worker = None
+        self.worker_thread = None
+
+    def reject(self):
+        if self.worker is not None:
+            self.worker.cancel()
+            return
+        super().reject()
 
     def get_field_info(self, field_name):
         """Возвращает информацию о поле (тип, формат и т.д.) из настроек шаблона"""
@@ -312,7 +344,6 @@ class MassGenerateDialog(QDialog):
         }
 
     def format_value(self, value, field_info):
-        """Форматирует значение в соответствии с типом поля и форматом"""
         field_type = field_info.get("type", "text")
         fmt = field_info.get("format", "")
 
@@ -320,39 +351,10 @@ class MassGenerateDialog(QDialog):
             return ""
 
         if field_type == "date":
-            try:
-                dt = pd.to_datetime(value)
-                if fmt:
-                    # Преобразуем шаблон формата, например "DD.MM.YYYY" в "%d.%m.%Y"
-                    # Но пользователь может хранить формат уже в виде "%d.%m.%Y"
-                    # Поэтому попробуем оба варианта
-                    if '%' in fmt:
-                        # Уже strftime-формат
-                        return dt.strftime(fmt)
-                    else:
-                        # Конвертируем из нашего формата в strftime
-                        fmt = fmt.replace("DD", "%d").replace("MM", "%m").replace("YYYY", "%Y")
-                        return dt.strftime(fmt)
-                else:
-                    return dt.strftime("%d.%m.%Y")
-            except:
-                return str(value)
+            return format_date(value, fmt)
         elif field_type == "number":
-            try:
-                num = float(value)
-                if fmt:
-                    try:
-                        formatted = fmt.format(num)
-                    except:
-                        formatted = str(num)
-                else:
-                    formatted = f"{num:.2f}" if isinstance(num, float) and num % 1 != 0 else str(int(num))
-
-                return formatted
-            except:
-                return str(value)
+            return format_number(value, fmt)
         elif field_type == "bool":
-            # Преобразуем в булево
             if isinstance(value, bool):
                 return value
             if isinstance(value, str):
@@ -408,7 +410,7 @@ class MassGenerateDialog(QDialog):
         # Создаём строки для каждой колонки
         for col in self.columns:
             label = QLabel(f"Колонка '{col}' →")
-            combo = QComboBox()
+            combo = NoWheelComboBox()
             combo.addItem("(не использовать)", None)
             for display_name, typ, field_name in all_fields:
                 combo.addItem(display_name, (typ, field_name))

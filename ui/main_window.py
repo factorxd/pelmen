@@ -18,6 +18,8 @@ from PySide6.QtGui import QAction, QIcon, QPalette, QColor
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from ui.form_builder import FormBuilder
+from ui.theme import apply_theme
+from version import __version__
 
 def resource_path(relative_path):
     try:
@@ -70,8 +72,6 @@ class MainWindow(QMainWindow):
 
         self.form_builder = None
 
-        self.light_palette = QApplication.instance().palette()
-
         self.network_manager = QNetworkAccessManager(self)
 
         self.load_display_names()
@@ -87,14 +87,18 @@ class MainWindow(QMainWindow):
                 pass  # если что-то пошло не так, используем размер по умолчанию
 
         self.draft_interval_seconds = self.settings.get("draft_interval", 0.5)
-        self.apply_font_size(self.settings.get("font_size", "Средний"))
+        self.apply_font_size(self.settings.get("font_size", 10))
         if self.root_folder:
             self.set_root_folder(self.root_folder)
         else:
             self.ask_for_folder()
 
+        # Показываем отложенное уведомление (если в прошлый запуск нашли обновление)
+        QTimer.singleShot(0, self._show_pending_update)
+
+        # Тихая проверка через 15 секунд — результат откладываем до следующего запуска
         if self.settings.get("auto_check_updates", True):
-            QTimer.singleShot(2000, lambda: self.check_for_updates(manual=False))
+            QTimer.singleShot(15000, lambda: self.check_for_updates(manual=False))
 
         # Очистка временных файлов предпросмотра
         preview_temp_dir = os.path.join(self.data_dir, "temp_preview")
@@ -189,17 +193,25 @@ class MainWindow(QMainWindow):
         self.search_edit.textChanged.connect(self.filter_tree)
 
         clear_btn = QPushButton("✖")
-        clear_btn.setFixedSize(20, 20)
+        clear_btn.setFixedSize(24, 24)
         clear_btn.setStyleSheet("QPushButton { border: none; background: transparent; }")
+        clear_btn.setToolTip("Очистить поиск")
 
         def clear_search():
             self.search_edit.clear()
-            self.filter_tree("")  # явно сбрасываем фильтр
+            self.filter_tree("")
 
         clear_btn.clicked.connect(clear_search)
 
+        refresh_btn = QPushButton("⭯")
+        refresh_btn.setFixedSize(24, 24)
+        refresh_btn.setStyleSheet("QPushButton { border: none; background: transparent; }")
+        refresh_btn.setToolTip("Обновить список шаблонов")
+        refresh_btn.clicked.connect(self.refresh_templates)
+
         search_layout.addWidget(self.search_edit)
         search_layout.addWidget(clear_btn)
+        search_layout.addWidget(refresh_btn)
         left_layout.addLayout(search_layout)
 
         self.tree_view = QTreeView()
@@ -324,6 +336,48 @@ class MainWindow(QMainWindow):
         # Сбрасываем поиск
         self.search_edit.clear()
         self.filter_tree("")
+
+    def refresh_templates(self):
+        """Перечитывает папку с шаблонами и сбрасывает кэш разобранных шаблонов.
+
+        Нужно, когда юзер отредактировал шаблон снаружи (в Word) или добавил
+        новый файл — приложение должно увидеть изменения без перезапуска.
+        """
+        if not self.root_folder or not os.path.exists(self.root_folder):
+            QMessageBox.warning(self, "Ошибка", "Папка с шаблонами не выбрана.")
+            return
+
+        current_path = self.current_template.file_path if self.current_template else None
+
+        # Сбрасываем кэш разобранных шаблонов
+        self.templates_cache.clear()
+
+        # Принудительно обновляем модель файловой системы
+        model = self.proxy_model.sourceModel()
+        if model is not None:
+            model.setRootPath(self.root_folder)
+            root_index = model.index(self.root_folder)
+            self.tree_view.setRootIndex(self.proxy_model.mapFromSource(root_index))
+
+        # Если был выбран шаблон — перечитываем его поля
+        if current_path and os.path.exists(current_path):
+            try:
+                from logic.template_parser import parse_docx_template
+                from logic.data_models import Template
+
+                fields, blocks = parse_docx_template(current_path)
+                name = os.path.splitext(os.path.basename(current_path))[0]
+                template = Template(current_path, name, current_path, fields, blocks)
+                self.templates_cache[current_path] = template
+                self.current_template = template
+                self.build_form()
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Ошибка",
+                    f"Не удалось перечитать шаблон:\n{str(e)}"
+                )
+
+        self.statusBar().showMessage("Шаблоны обновлены", 2000)
 
     def open_templates_folder(self):
         if not self.root_folder or not os.path.exists(self.root_folder):
@@ -483,56 +537,7 @@ class MainWindow(QMainWindow):
         self._draft_timer.start(int(self.draft_interval_seconds * 1000))
 
     def toggle_dark_theme(self, checked):
-        app = QApplication.instance()
-        if checked:
-            self.search_edit.setStyleSheet(
-                "QLineEdit { color: white; background: #3c3c3c; } QLineEdit[placeholderText] { color: #aaaaaa; }")
-            palette = QPalette()
-            palette.setColor(QPalette.Window, QColor(43, 43, 43))
-            palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
-            palette.setColor(QPalette.Base, QColor(30, 30, 30))
-            palette.setColor(QPalette.AlternateBase, QColor(43, 43, 43))
-            palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 220))
-            palette.setColor(QPalette.ToolTipText, QColor(0, 0, 0))
-            palette.setColor(QPalette.Text, QColor(255, 255, 255))
-            palette.setColor(QPalette.Button, QColor(53, 53, 53))
-            palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
-            palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
-            palette.setColor(QPalette.Link, QColor(42, 130, 218))
-            palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-            palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
-            app.setPalette(palette)
-            app.setStyleSheet("""
-                QLineEdit {
-                    color: white;
-                    background: #3c3c3c;
-                    selection-background-color: #2a82da;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #2a82da;
-                }
-                QLineEdit[placeholderText] {
-                    color: #aaaaaa;
-                }
-                QTextEdit {
-                    background: #2b2b2b;
-                    color: white;
-                }
-                QTextEdit:focus {
-                    border: 1px solid #2a82da;
-                }
-                QToolTip {
-                    background-color: #ffffdc;
-                    color: black;
-                    border: 1px solid black;
-                }
-            """)
-        else:
-            self.search_edit.setStyleSheet("")
-            app.setPalette(self.light_palette)
-            app.setStyleSheet("")
-        app.setStyle('Fusion')
-
+        apply_theme(QApplication.instance(), checked)
         self.settings["dark_theme"] = checked
 
     def open_presets(self):
@@ -560,11 +565,12 @@ class MainWindow(QMainWindow):
         dialog.finished.connect(lambda: self.save_dialog_size("helper_dialog", dialog.size()))
         dialog.exec()
 
-    def _show_html_dialog(self, title, html):
+    def _show_html_dialog(self, title, html, size=(750, 550)):
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
-        dialog.setMinimumSize(750, 550)
+        dialog.setMinimumSize(400, 300)
         dialog.setSizeGripEnabled(True)
+        dialog.resize(*size)
         layout = QVBoxLayout(dialog)
         text_browser = QTextBrowser()
         text_browser.setHtml(html)
@@ -588,49 +594,75 @@ class MainWindow(QMainWindow):
                 original_html = f.read()
             is_dark = self.settings.get("dark_theme", False)
             if is_dark:
-                # Вставляем стили в начало <head>
-                # Удаляем существующий <style> и вставляем свой с !important
                 import re
-                # Удаляем старый style
-                html_no_style = re.sub(r'<style[^>]*>.*?</style>', '', original_html, flags=re.DOTALL)
-                new_style = """
+                # Полностью убираем оригинальный <style> — иначе QTextBrowser
+                # не перекрывает его (не поддерживает !important корректно).
+                html_no_style = re.sub(
+                    r'<style[^>]*>.*?</style>', '', original_html,
+                    flags=re.DOTALL
+                )
+                dark_css = """
                 <style>
                     body {
-                        background-color: #2b2b2b !important;
-                        color: #e0e0e0 !important;
                         font-family: 'Segoe UI', Arial, sans-serif;
                         margin: 20px;
                         line-height: 1.5;
+                        max-width: 900px;
+                        background-color: #2b2b2b;
+                        color: #e0e0e0;
                     }
-                    h3, h4 { color: #ffffff !important; }
+                    h2 { color: #ffffff; margin-top: 5px; }
+                    h3 {
+                        color: #ffffff;
+                        margin-top: 30px;
+                        border-bottom: 1px solid #444;
+                        padding-bottom: 4px;
+                    }
+                    h4 { color: #e0e0e0; margin-top: 20px; }
                     code {
-                        background: #3c3c3c !important;
-                        padding: 2px 4px;
+                        background: #3c3c3c;
+                        padding: 2px 5px;
                         border-radius: 4px;
-                        font-family: monospace;
-                        color: #ffcc00 !important;
+                        font-family: Consolas, monospace;
+                        color: #ffcc66;
                     }
                     pre {
-                        background: #1e1e1e !important;
+                        background: #1e1e1e;
                         padding: 10px;
                         border-radius: 5px;
-                        overflow-x: auto;
-                        color: #f8f8f2 !important;
+                        font-size: 0.9em;
                         border: 1px solid #444;
+                        color: #f0f0f0;
                     }
                     pre code {
-                        background: transparent !important;
-                        color: #f8f8f2 !important;
+                        background: transparent;
+                        color: #f0f0f0;
                         padding: 0;
                     }
                     .note {
-                        background: #2a2a2a !important;
-                        padding: 10px;
+                        background: #2a2a2a;
+                        padding: 10px 14px;
                         border-left: 4px solid #2a82da;
                         margin: 15px 0;
-                        color: #cccccc !important;
+                        border-radius: 3px;
+                        color: #cccccc;
                     }
-                    .hotkey { color: #ffaa66 !important; font-weight: bold; }
+                    .warn {
+                        background: #3a2e1a;
+                        padding: 10px 14px;
+                        border-left: 4px solid #e67e22;
+                        margin: 15px 0;
+                        border-radius: 3px;
+                        color: #e0c89a;
+                    }
+                    .hotkey {
+                        font-weight: bold;
+                        color: #ffaa66;
+                        background: #3c3c3c;
+                        padding: 2px 6px;
+                        border-radius: 3px;
+                    }
+                    .version { color: #999; font-size: 0.9em; }
                     table {
                         border-collapse: collapse;
                         width: 100%;
@@ -641,41 +673,61 @@ class MainWindow(QMainWindow):
                         border: 1px solid #555;
                         padding: 8px;
                         text-align: left;
-                        color: #e0e0e0 !important;
+                        color: #e0e0e0;
                     }
-                    th { background-color: #3c3c3c; }
+                    th { background-color: #3c3c3c; color: #ffffff; }
+                    ul, ol { margin: 8px 0; }
+                    li { margin: 4px 0; }
+                    a { color: #5aa9e6; }
                 </style>
                 """
-                # Вставляем новый стиль после <head>
-                styled = html_no_style.replace('<head>', '<head>' + new_style, 1)
+                styled = html_no_style.replace('<head>', '<head>' + dark_css, 1)
             else:
-                # Светлая тема: оставляем оригинальный стиль
                 styled = original_html
             self._show_html_dialog("Как пользоваться", styled)
         else:
             QMessageBox.information(self, "Справка", "Файл справки не найден. Создайте help.html в папке data.")
 
     def show_about(self):
-        about_html = """
+        is_dark = self.settings.get("dark_theme", False)
+        if is_dark:
+            h2_color = "#ffffff"
+            text_color = "#e0e0e0"
+            link_color = "#5aa9e6"
+            muted = "#a0a0a0"
+        else:
+            h2_color = "#2c3e50"
+            text_color = "#222222"
+            link_color = "#3498db"
+            muted = "#777777"
+
+        about_html = f"""
         <html>
         <head><style>
-            body { font-family: 'Segoe UI', Arial; text-align: center; margin: 40px; }
-            h2 { color: #2c3e50; }
-            a { color: #3498db; text-decoration: none; }
-            a:hover { text-decoration: underline; }
+            body {{
+                font-family: 'Segoe UI', Arial;
+                text-align: center;
+                margin: 40px;
+                color: {text_color};
+            }}
+            h2 {{ color: {h2_color}; margin-bottom: 5px; }}
+            a {{ color: {link_color}; text-decoration: none; }}
+            a:hover {{ text-decoration: underline; }}
+            .muted {{ color: {muted}; }}
         </style></head>
         <body>
         <h2>Пельмень</h2>
-        <p><b>Версия 1.3.1</b></p>
-        <p>© 2026</p>
+        <p><b>Версия {__version__}</b></p>
+        <p class="muted">© 2026</p>
         <p>Простой шаблонизатор документов</p>
-        <p>Сделано на Python + PySide6<br>
+        <p class="muted">Сделано на Python + PySide6<br>
         Использует: python-docx, docxtpl</p>
-        <p><a href="https://github.com/factorxd/pelmen">GitHub</a></p>
+        <p><a href="https://github.com/factorxd/pelmen">GitHub</a> &middot;
+        <a href="https://github.com/factorxd/pelmen/releases/latest">Скачать последнюю версию</a></p>
         </body>
         </html>
         """
-        self._show_html_dialog("О программе", about_html)
+        self._show_html_dialog("О программе", about_html, size=(500, 400))
 
     def get_presets_data(self):
         presets_file = os.path.join(self.data_dir, "presets.json")
@@ -710,6 +762,12 @@ class MainWindow(QMainWindow):
         return menu
 
     def insert_preset_value(self, widget, value):
+        if hasattr(widget, 'setRawValue') and callable(getattr(widget, 'setRawValue')):
+            try:
+                from ui.form_builder import FormBuilder
+                widget.setRawValue(FormBuilder.extract_number(value))
+            except Exception:
+                pass
         if isinstance(widget, QLineEdit):
             widget.insert(value)
         elif isinstance(widget, QTextEdit):
@@ -803,7 +861,7 @@ class MainWindow(QMainWindow):
         # Создаём запрос
         url = QUrl("https://api.github.com/repos/factorxd/pelmen/releases/latest")
         request = QNetworkRequest(url)
-        request.setHeader(QNetworkRequest.UserAgentHeader, "Pelmen/1.3.1")
+        request.setHeader(QNetworkRequest.UserAgentHeader, "Pelmen")
 
         self.current_reply = self.network_manager.get(request)
         self.current_reply.finished.connect(self._on_update_check_finished)
@@ -874,28 +932,70 @@ class MainWindow(QMainWindow):
             self.current_reply.ignoreSslErrors()
 
     def _process_update_response(self, latest_version):
-        current_version = "1.3.1"
+        current_version = __version__
         try:
             # Преобразуем версии в кортежи для сравнения
             def vtuple(v):
                 return tuple(map(int, v.split('.')))
 
             if vtuple(latest_version) > vtuple(current_version):
-                reply = QMessageBox.question(
-                    self,
-                    "Доступно обновление",
-                    f"Доступна новая версия {latest_version}!\n\nПерейти на страницу загрузки?",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                if reply == QMessageBox.Yes:
-                    import webbrowser
-                    webbrowser.open("https://github.com/factorxd/pelmen/releases/latest")
+                if self._is_manual_check:
+                    # Ручная проверка — можно сразу предложить переход
+                    reply = QMessageBox.question(
+                        self,
+                        "Доступно обновление",
+                        f"Доступна новая версия {latest_version}!\n\n"
+                        "Перейти на страницу загрузки?",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    if reply == QMessageBox.Yes:
+                        import webbrowser
+                        webbrowser.open(
+                            "https://github.com/factorxd/pelmen/releases/latest"
+                        )
+                else:
+                    # Авто-проверка — сохраняем и покажем при следующем запуске
+                    self.settings["pending_update"] = latest_version
+                    self.save_settings()
             elif self._is_manual_check:
                 QMessageBox.information(self, "Обновлений не найдено",
                                         f"У вас установлена последняя версия ({current_version}).")
         except Exception as e:
             if self._is_manual_check:
                 QMessageBox.warning(self, "Ошибка", f"Не удалось сравнить версии:\n{e}")
+
+    def _show_pending_update(self):
+        """Показывает отложенное уведомление об обновлении (найдено в прошлый запуск).
+
+        Если версия уже показывалась — молча пропускаем.
+        """
+        version = self.settings.get("pending_update")
+        if not version:
+            return
+
+        # Если про эту версию уже говорили — не повторяемся
+        if version == self.settings.get("last_shown_update"):
+            self.settings.pop("pending_update", None)
+            self.save_settings()
+            return
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Доступно обновление")
+        msg.setIcon(QMessageBox.Information)
+        msg.setText(f"Доступна новая версия {version}.")
+        msg.setInformativeText(
+            "Ссылку на страницу загрузки можно найти в Справка → О программе."
+        )
+        btn_ok = msg.addButton("Понятно", QMessageBox.AcceptRole)
+        btn_disable = msg.addButton("Отключить проверку", QMessageBox.DestructiveRole)
+        msg.setDefaultButton(btn_ok)
+        msg.exec()
+
+        self.settings["last_shown_update"] = version
+        self.settings.pop("pending_update", None)
+        if msg.clickedButton() == btn_disable:
+            self.settings["auto_check_updates"] = False
+        self.save_settings()
 
     def manual_check_updates(self):
         self.check_for_updates(manual=True)
@@ -905,17 +1005,33 @@ class MainWindow(QMainWindow):
         dialog = SettingsProgramDialog(self)
         dialog.exec()
 
-    def apply_font_size(self, size_name):
-        """Применяет размер шрифта ко всему приложению"""
+    def apply_font_size(self, size):
+        """Применяет размер шрифта ко всему приложению.
+
+        size может быть int (новый формат) или строка (старый формат).
+        Пробегаемся по всем виджетам и принудительно ставим им шрифт,
+        иначе уже созданные виджеты (тулбар, поиск и т.д.) не обновятся
+        до второго применения настроек.
+        """
+        # Приводим к int
+        if isinstance(size, str):
+            size = {"Маленький": 8, "Средний": 10, "Большой": 12}.get(size, 10)
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            size = 10
+        size = max(6, min(24, size))
+
         font = QApplication.font()
-        if size_name == "Маленький":
-            font.setPointSize(8)
-        elif size_name == "Большой":
-            font.setPointSize(12)
-        else:  # "Средний" или по умолчанию
-            font.setPointSize(10)
+        font.setPointSize(size)
         QApplication.setFont(font)
-        # Перестраиваем текущую форму, чтобы обновить виджеты
+
+        # Принудительно применяем шрифт ко всем существующим виджетам
+        for widget in QApplication.allWidgets():
+            widget.setFont(font)
+            widget.update()
+
+        # Перестраиваем текущую форму, чтобы виджеты пересоздались с новым шрифтом
         if self.current_template:
             self.build_form()
 

@@ -3,6 +3,7 @@ import os
 import json
 from collections import defaultdict
 import hashlib
+from logic.format_utils import format_date, format_number, strftime_to_qt_format
 
 from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6.QtWidgets import (
@@ -10,6 +11,72 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QDateEdit, QCheckBox, QDoubleSpinBox,
     QPushButton, QFrame, QGroupBox, QFileDialog
 )
+
+class NumberLineEdit(QLineEdit):
+    """QLineEdit для чисел с форматированием после ввода.
+
+    Пока фокус в поле — показывает сырое число (удобно редактировать).
+    При потере фокуса — форматирует по настройкам поля.
+    """
+
+    def __init__(self, get_format_func, parent=None):
+        super().__init__(parent)
+        self._get_format = get_format_func
+        self._raw = ""
+        self.editingFinished.connect(self.apply_format)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if self._raw and self.text() != self._raw:
+            super().setText(self._raw)
+
+    def focusOutEvent(self, event):
+        self.apply_format()
+        super().focusOutEvent(event)
+
+    def apply_format(self):
+        import re
+        text = self.text().strip()
+        if not text:
+            self._raw = ""
+            return
+        cleaned = re.sub(r'[^\d,.\-]', '', text).replace(',', '.')
+        if not cleaned or cleaned == '-':
+            self._raw = text
+            return
+        try:
+            num = float(cleaned)
+        except ValueError:
+            self._raw = text
+            return
+        self._raw = str(num)
+        fmt = self._get_format()
+        if fmt:
+            formatted = format_number(num, fmt)
+        else:
+            formatted = str(int(num)) if num == int(num) else f"{num:.2f}"
+        super().setText(formatted)
+
+    def raw_value(self):
+        return self._raw
+
+    def setRawValue(self, value):
+        if value is None or value == "":
+            self._raw = ""
+            super().setText("")
+            return
+        try:
+            num = float(value)
+        except (ValueError, TypeError):
+            self._raw = str(value)
+            super().setText(str(value))
+            return
+        self._raw = str(num)
+        fmt = self._get_format()
+        if fmt:
+            super().setText(format_number(num, fmt))
+        else:
+            super().setText(str(int(num)) if num == int(num) else f"{num:.2f}")
 
 class FormBuilder:
     def __init__(self, parent_window, template, display_names, data_dir):
@@ -141,23 +208,27 @@ class FormBuilder:
         info = self.display_names.get(self.template.id, {}).get(key, {})
         if isinstance(info, str):
             field_type = "text"
+            fmt = ""
         else:
             field_type = info.get("type", "text")
+            fmt = info.get("format", "")
 
         if field_type == "date":
             edit = QDateEdit()
             edit.setDate(QDate.currentDate())
             edit.setCalendarPopup(True)
-            edit.setDisplayFormat("dd.MM.yyyy")
+            self._configure_date_edit(edit, fmt)
             edit.dateChanged.connect(self.parent.schedule_draft_save)
         elif field_type == "bool":
             edit = QCheckBox()
             edit.stateChanged.connect(self.parent.schedule_draft_save)
         elif field_type == "number":
-            edit = QDoubleSpinBox()
-            edit.setRange(-9999999.99, 9999999.99)
-            edit.setDecimals(2)
-            edit.valueChanged.connect(self.parent.schedule_draft_save)
+            def _get_fmt(name=field.name):
+                info = self.display_names.get(self.template.id, {}).get(f"field:{name}", {})
+                if isinstance(info, str):
+                    return ""
+                return info.get("format", "")
+            edit = NumberLineEdit(_get_fmt)
             edit.textChanged.connect(self.parent.schedule_draft_save)
         elif field_type == "image":
             widget_container = QWidget()
@@ -226,21 +297,28 @@ class FormBuilder:
             data = self.display_names.get(self.template.id, {}).get(key, {})
             if isinstance(data, str):
                 field_type = "text"
+                fmt = ""
             else:
                 field_type = data.get("type", "text")
+                fmt = data.get("format", "")
 
             if field_type == "date":
                 edit = QDateEdit()
                 edit.setDate(QDate.currentDate())
+                edit.setCalendarPopup(True)
+                self._configure_date_edit(edit, fmt)
                 edit.dateChanged.connect(self.parent.schedule_draft_save)
             elif field_type == "bool":
                 edit = QCheckBox()
                 edit.stateChanged.connect(self.parent.schedule_draft_save)
             elif field_type == "number":
-                edit = QDoubleSpinBox()
-                edit.setRange(-9999999.99, 9999999.99)
-                edit.setDecimals(2)
-                edit.valueChanged.connect(self.parent.schedule_draft_save)
+                def _get_fmt(bn=block.name, fn=field.name):
+                    info = self.display_names.get(self.template.id, {}).get(
+                        f"block_field:{bn}.{fn}", {})
+                    if isinstance(info, str):
+                        return ""
+                    return info.get("format", "")
+                edit = NumberLineEdit(_get_fmt)
                 edit.textChanged.connect(self.parent.schedule_draft_save)
             elif field_type == "image":
                 widget_container = QWidget()
@@ -291,54 +369,12 @@ class FormBuilder:
 
     def collect_data(self):
         data = {}
-        months_full = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-                       'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
-        months_short = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн',
-                        'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
-
-        def format_date(qdate, fmt):
-            if not fmt:
-                return qdate.toString("dd.MM.yyyy")
-            from datetime import datetime
-            dt = datetime(qdate.year(), qdate.month(), qdate.day())
-            if '%B' in fmt or '%b' in fmt:
-                result = fmt.replace('%B', months_full[dt.month-1]).replace('%b', months_short[dt.month-1])
-                import locale
-                locale.setlocale(locale.LC_TIME, 'C')
-                temp = result.replace(months_full[dt.month-1], 'MONTH_FULL').replace(months_short[dt.month-1], 'MONTH_SHORT')
-                temp = dt.strftime(temp)
-                temp = temp.replace('MONTH_FULL', months_full[dt.month-1]).replace('MONTH_SHORT', months_short[dt.month-1])
-                return temp
-            else:
-                try:
-                    return dt.strftime(fmt)
-                except:
-                    return qdate.toString("dd.MM.yyyy")
-
         for name, widget in self.simple_widgets.items():
             key = f"field:{name}"
             info = self.display_names.get(self.template.id, {}).get(key, {})
             field_type = info.get("type", "text")
             fmt = info.get("format", "")
-            if isinstance(widget, QLineEdit):
-                val = widget.text()
-            elif isinstance(widget, QDateEdit):
-                val = format_date(widget.date(), fmt)
-            elif isinstance(widget, QCheckBox):
-                val = widget.isChecked()
-            elif isinstance(widget, QDoubleSpinBox):
-                val = widget.value()
-                if fmt and field_type == "number":
-                    try:
-                        # Применяем формат, чтобы получить строку без .0
-                        val = fmt.format(val)
-                    except:
-                        pass
-            elif field_type == "image" and hasattr(widget, 'file_path_edit'):
-                val = widget.file_path_edit.text()
-            else:
-                val = ""
-            data[name] = val
+            data[name] = self._extract_widget_value(widget, field_type, fmt)
 
         for block_name, cards in self.block_widgets.items():
             block_data = []
@@ -349,37 +385,66 @@ class FormBuilder:
                     info = self.display_names.get(self.template.id, {}).get(key, {})
                     field_type = info.get("type", "text")
                     fmt = info.get("format", "")
-                    if isinstance(fw, QLineEdit):
-                        val = fw.text()
-                    elif isinstance(fw, QDateEdit):
-                        val = format_date(fw.date(), fmt)
-                    elif isinstance(fw, QCheckBox):
-                        val = fw.isChecked()
-                    elif isinstance(fw, QDoubleSpinBox):
-                        val = fw.value()
-                        if fmt and field_type == "number":
-                            try:
-                                val = fmt.format(val)
-                            except:
-                                pass
-                    elif field_type == "image" and hasattr(fw, 'file_path_edit'):
-                        val = fw.file_path_edit.text()
-                    else:
-                        val = ""
-                    item[fname] = val
+                    item[fname] = self._extract_widget_value(fw, field_type, fmt)
                 block_data.append(item)
             data[block_name] = block_data
         return data
 
+    def _extract_widget_value(self, widget, field_type, fmt):
+        if isinstance(widget, NumberLineEdit):
+            widget.apply_format()
+            return widget.text()
+        if isinstance(widget, QLineEdit):
+            return widget.text()
+        if isinstance(widget, QDateEdit):
+            return format_date(widget.date(), fmt)
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        if isinstance(widget, QDoubleSpinBox):
+            return format_number(widget.value(), fmt)
+        if field_type == "image" and hasattr(widget, 'file_path_edit'):
+            return widget.file_path_edit.text()
+        return ""
+
     def save_draft(self):
         try:
-            data = self.collect_data()
+            data = self._collect_raw_data()
         except RuntimeError:
-            # Виджеты уже удалены (например, форма закрыта), не сохраняем
             return
         draft_path = self.get_draft_path()
         with open(draft_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _collect_raw_data(self):
+        """Сырые данные для черновика: даты в ISO, числа как float."""
+        data = {}
+        for name, widget in self.simple_widgets.items():
+            data[name] = self._extract_raw_widget_value(widget)
+
+        for block_name, cards in self.block_widgets.items():
+            block_data = []
+            for card in cards:
+                item = {}
+                for fname, fw in card["fields"].items():
+                    item[fname] = self._extract_raw_widget_value(fw)
+                block_data.append(item)
+            data[block_name] = block_data
+        return data
+
+    def _extract_raw_widget_value(self, widget):
+        if isinstance(widget, NumberLineEdit):
+            return widget.raw_value()
+        if isinstance(widget, QLineEdit):
+            return widget.text()
+        if isinstance(widget, QDateEdit):
+            return widget.date().toString(Qt.ISODate)
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        if isinstance(widget, QDoubleSpinBox):
+            return widget.value()
+        if hasattr(widget, 'file_path_edit'):
+            return widget.file_path_edit.text()
+        return ""
 
     def load_draft(self):
         draft_path = self.get_draft_path()
@@ -390,30 +455,8 @@ class FormBuilder:
 
         for name, widget in self.simple_widgets.items():
             if name in draft_data:
-                val = draft_data[name]
-                if isinstance(widget, QLineEdit):
-                    widget.setText(str(val))
-                elif isinstance(widget, QDateEdit):
-                    if val:
-                        if isinstance(val, str):
-                            widget.setDate(QDate.fromString(val, "yyyy-MM-dd"))
-                elif isinstance(widget, QCheckBox):
-                    if isinstance(val, bool):
-                        widget.setChecked(val)
-                    elif isinstance(val, str):
-                        widget.setChecked(val.lower() == 'true')
-                    else:
-                        widget.setChecked(bool(val))
-                elif isinstance(widget, QDoubleSpinBox):
-                        if isinstance(val, (int, float)):
-                            widget.setValue(val)
-                        elif isinstance(val, str):
-                            try:
-                                widget.setValue(self.extract_number(val))
-                            except:
-                                pass
+                self._restore_widget_value(widget, draft_data[name])
 
-        # Восстановление блоков (упрощённо, для демо)
         for block in self.template.blocks:
             block_name = block.name
             if block_name not in draft_data:
@@ -424,36 +467,46 @@ class FormBuilder:
             group_layout = self.block_layouts.get(block_name)
             if not group_layout:
                 continue
-            if block_name in self.block_widgets:
-                while self.block_widgets[block_name]:
-                    self.remove_block_card(block_name, self.block_widgets[block_name][-1])
+            while self.block_widgets.get(block_name):
+                self.remove_block_card(block_name, self.block_widgets[block_name][-1])
             for item_data in block_items:
                 self.add_block_card(block, group_layout, block_name)
                 new_card = self.block_widgets[block_name][-1]
                 for field_name, value in item_data.items():
                     if field_name in new_card["fields"]:
-                        widget = new_card["fields"][field_name]
-                        if isinstance(widget, QLineEdit):
-                            widget.setText(str(value))
-                        elif isinstance(widget, QDateEdit):
-                            if value:
-                                if isinstance(value, str):
-                                    widget.setDate(QDate.fromString(value, "yyyy-MM-dd"))
-                        elif isinstance(widget, QCheckBox):
-                            if isinstance(value, bool):
-                                widget.setChecked(value)
-                            elif isinstance(value, str):
-                                widget.setChecked(value.lower() == 'true')
-                            else:
-                                widget.setChecked(bool(value))
-                        elif isinstance(widget, QDoubleSpinBox):
-                            if isinstance(val, (int, float)):
-                                widget.setValue(val)
-                            elif isinstance(val, str):
-                                try:
-                                    widget.setValue(self.extract_number(val))
-                                except:
-                                    pass
+                        self._restore_widget_value(new_card["fields"][field_name], value)
+
+    def _restore_widget_value(self, widget, value):
+        if isinstance(widget, NumberLineEdit):
+            widget.setRawValue(value)
+        if isinstance(widget, QLineEdit):
+            widget.setText("" if value is None else str(value))
+        elif isinstance(widget, QDateEdit):
+            if not value:
+                return
+            # Поддерживаем и новый ISO-формат, и старые черновики
+            for qfmt in (Qt.ISODate, "dd.MM.yyyy", "yyyy-MM-dd"):
+                qdate = QDate.fromString(str(value), qfmt)
+                if qdate.isValid():
+                    widget.setDate(qdate)
+                    return
+        elif isinstance(widget, QCheckBox):
+            if isinstance(value, bool):
+                widget.setChecked(value)
+            elif isinstance(value, str):
+                widget.setChecked(value.lower() == 'true')
+            else:
+                widget.setChecked(bool(value))
+        elif isinstance(widget, QDoubleSpinBox):
+            if isinstance(value, (int, float)):
+                widget.setValue(float(value))
+            elif isinstance(value, str):
+                try:
+                    widget.setValue(self.extract_number(value))
+                except (ValueError, TypeError):
+                    pass
+        elif hasattr(widget, 'file_path_edit'):
+            widget.file_path_edit.setText("" if value is None else str(value))
 
     def clear_draft(self):
         draft_path = self.get_draft_path()
@@ -467,6 +520,8 @@ class FormBuilder:
 
     def reset_form(self):
         for widget in self.simple_widgets.values():
+            if isinstance(widget, NumberLineEdit):
+                widget.setRawValue("")
             if isinstance(widget, QLineEdit):
                 widget.clear()
             elif isinstance(widget, QDateEdit):
@@ -480,6 +535,8 @@ class FormBuilder:
                 self.remove_block_card(block_name, cards[-1])
             if cards:
                 for fw in cards[0]["fields"].values():
+                    if isinstance(fw, NumberLineEdit):
+                        fw.setRawValue("")
                     if isinstance(fw, QLineEdit):
                         fw.clear()
                     elif isinstance(fw, QDateEdit):
@@ -509,3 +566,16 @@ class FormBuilder:
             return float(cleaned)
         except:
             return 0.0
+
+    def _configure_date_edit(self, edit, fmt):
+        """Настраивает QDateEdit под формат поля.
+
+        - Qt displayFormat получаем из strftime через конвертер;
+        - для форматов с названиями месяцев ставим русскую локаль,
+          чтобы отображалось «октября», а не «October».
+        """
+        from PySide6.QtCore import QLocale
+        qt_fmt = strftime_to_qt_format(fmt)
+        edit.setDisplayFormat(qt_fmt)
+        if fmt and ('%B' in fmt or '%b' in fmt):
+            edit.setLocale(QLocale(QLocale.Russian, QLocale.Russia))

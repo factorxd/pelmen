@@ -7,8 +7,9 @@ import subprocess
 # ----- Конфигурация -----
 APP_NAME = "Пельмень"
 ICON_PATH = "icons/pelmen2.ico"
-UPX_DIR = "."          # если UPX не используется, можно закомментировать
+# UPX_DIR = ""          # если UPX не используется, можно закомментировать
 DATA_DIRS = ["data", "icons"] # папки, которые копируются в сборку
+VERSION_FILE = "version_info.txt"
 EXCLUDE_MODULES = [
     "PySide6.QtWebEngine", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
     "PySide6.QtQuick", "PySide6.QtQml", "PySide6.Qt3DCore", "PySide6.Qt3DExtras",
@@ -61,7 +62,9 @@ def build_exe():
     ]
 
     cmd.extend([
+        "--noupx",
         "--collect-data", "certifi",
+        "--collect-data", "docxcompose",
         "--hidden-import", "ssl",
         "--hidden-import", "cryptography",
         "--hidden-import", "OpenSSL",
@@ -74,10 +77,15 @@ def build_exe():
     # Исключаем модули
     for mod in EXCLUDE_MODULES:
         cmd.append(f"--exclude-module={mod}")
+
+    if os.path.exists(VERSION_FILE):
+        cmd.append(f"--version-file={VERSION_FILE}")
+    else:
+        print(f"⚠️  {VERSION_FILE} не найден — EXE будет без версии в свойствах")
     # UPX (опционально, если папка существует)
-    if os.path.exists(UPX_DIR):
-        cmd.append(f"--upx-dir={UPX_DIR}")
-        cmd.append("--upx-exclude=*.dll")
+    # if os.path.exists(UPX_DIR):
+    #     cmd.append(f"--upx-dir={UPX_DIR}")
+    #     cmd.append("--upx-exclude=*.dll")
     # Очистка и без подтверждения
     cmd.append("--noconfirm")
     cmd.append("--clean")

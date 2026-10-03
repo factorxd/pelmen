@@ -3,7 +3,7 @@ import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, QCheckBox,
     QComboBox, QDoubleSpinBox, QPushButton, QFileDialog, QHBoxLayout,
-    QDialogButtonBox
+    QDialogButtonBox, QSpinBox
 )
 
 
@@ -51,9 +51,11 @@ class SettingsProgramDialog(QDialog):
         form.addRow("Проверять обновления при запуске:", self.check_updates_cb)
 
         # Размер шрифта
-        self.font_size_combo = QComboBox()
-        self.font_size_combo.addItems(["Маленький", "Средний", "Большой"])
-        form.addRow("Размер шрифта в форме:", self.font_size_combo)
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(6, 24)
+        self.font_size_spin.setSuffix(" pt")
+        self.font_size_spin.setValue(10)
+        form.addRow("Размер шрифта:", self.font_size_spin)
 
         # Интервал автосохранения
         self.draft_interval = QDoubleSpinBox()
@@ -88,7 +90,7 @@ class SettingsProgramDialog(QDialog):
         self.settings["root_folder"] = self.folder_edit.text()
         self.settings["dark_theme"] = self.dark_theme_cb.isChecked()
         self.settings["auto_check_updates"] = self.check_updates_cb.isChecked()
-        self.settings["font_size"] = self.font_size_combo.currentText()
+        self.settings["font_size"] = self.font_size_spin.value()
         self.settings["draft_interval"] = self.draft_interval.value()
 
         # Обновляем словарь главного окна
@@ -114,11 +116,16 @@ class SettingsProgramDialog(QDialog):
         self.dark_theme_cb.setChecked(self.settings.get("dark_theme", False))
         self.check_updates_cb.setChecked(self.settings.get("auto_check_updates", True))
 
-        font_size = self.settings.get("font_size", "Средний")
-        if font_size in ["Маленький", "Средний", "Большой"]:
-            self.font_size_combo.setCurrentText(font_size)
-        else:
-            self.font_size_combo.setCurrentText("Средний")
+        font_size = self.settings.get("font_size", 10)
+        # Обратная совместимость со старыми настройками-строками
+        if isinstance(font_size, str):
+            font_size = {"Маленький": 8, "Средний": 10, "Большой": 12}.get(font_size, 10)
+        try:
+            font_size = int(font_size)
+        except (TypeError, ValueError):
+            font_size = 10
+        font_size = max(6, min(24, font_size))
+        self.font_size_spin.setValue(font_size)
 
         try:
             self.draft_interval.setValue(float(self.settings.get("draft_interval", 0.5)))

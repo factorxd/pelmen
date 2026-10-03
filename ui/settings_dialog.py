@@ -16,6 +16,32 @@ class CategoryListWidget(QListWidget):
         self.setDragEnabled(True)          # можно перетаскивать элементы внутри списка
         self.setDropIndicatorShown(True)
         self.parent_dialog = None
+        self._highlighted_item = None
+
+    def _set_highlight(self, item):
+        """Подсвечивает целевой элемент жирным шрифтом."""
+        if self._highlighted_item is item:
+            return
+        # Сбрасываем предыдущий
+        if self._highlighted_item is not None:
+            f = self._highlighted_item.font()
+            f.setBold(False)
+            self._highlighted_item.setFont(f)
+        self._highlighted_item = item
+        # Ставим новый
+        if item is not None:
+            f = item.font()
+            f.setBold(True)
+            item.setFont(f)
+
+    def dragMoveEvent(self, event):
+        item = self.itemAt(event.pos())
+        self._set_highlight(item)
+        event.accept()
+
+    def dragLeaveEvent(self, event):
+        self._set_highlight(None)
+        super().dragLeaveEvent(event)
 
     def dragEnterEvent(self, event):
         # Разрешаем дроп, если источник - дерево категорий или этот же список
@@ -25,6 +51,7 @@ class CategoryListWidget(QListWidget):
             event.ignore()
 
     def dropEvent(self, event):
+        self._set_highlight(None)
         source_widget = event.source()
         if source_widget is self:
             # Внутреннее перемещение — меняем порядок категорий
@@ -184,7 +211,7 @@ class SettingsDialog(QDialog):
         self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
         self.tree.setEditTriggers(QTreeWidget.DoubleClicked | QTreeWidget.EditKeyPressed)
         names_layout.addWidget(self.tree)
-        tabs.addTab(tab_names, "Имена, типы, форматы")
+        tabs.addTab(tab_names, "Свойства полей")
 
         # Вкладка 2: Категории (с drag&drop и группировкой)
         tab_cats = QWidget()
@@ -213,6 +240,20 @@ class SettingsDialog(QDialog):
         cat_btns.addWidget(add_btn)
         cat_btns.addWidget(del_btn)
         cat_btns.addWidget(rename_btn)
+        cat_btns.addSpacing(12)
+
+        # Пунктирная стрелка-подсказка: поля тащим из дерева справа в категории слева
+        arrow_label = QLabel("⇠")
+        arrow_label.setAlignment(Qt.AlignCenter)
+        arrow_label.setToolTip(
+            "Перетащите поле или блок из дерева справа\nна категорию в списке слева"
+        )
+        arrow_font = arrow_label.font()
+        arrow_font.setPointSize(28)
+        arrow_label.setFont(arrow_font)
+        arrow_label.setStyleSheet("color: #888;")
+        cat_btns.addWidget(arrow_label)
+
         cat_btns.addStretch()
         panel_layout.addLayout(cat_btns)
 
@@ -358,11 +399,7 @@ class SettingsDialog(QDialog):
                 ("DD Mon YYYY (рус)", "%d %b %Y"),
                 ("YYYY-MM-DD", "%Y-%m-%d"),
                 ("MM/DD/YYYY", "%m/%d/%Y"),
-                ("Свой формат...", "custom")
             ]
-            combo.addItems([p[0] for p in presets])
-            for label, fmt in presets:
-                combo.setItemData(combo.findText(label), fmt)
         elif field_type == "number":
             presets = [
                 ("1234", "{}"),
@@ -370,54 +407,76 @@ class SettingsDialog(QDialog):
                 ("1,234", "{:,}"),
                 ("1 234.5", "{:,.1f}"),
                 ("1 234.56", "{:,.2f}"),
-                ("Свой формат...", "custom")
             ]
-            combo.addItems([p[0] for p in presets])
-            for label, fmt in presets:
-                combo.setItemData(combo.findText(label), fmt)
         else:
             self.tree.setItemWidget(item, 3, None)
             return
 
+        for label, fmt in presets:
+            combo.addItem(label, fmt)
+
+        # Триггер "Свой формат..." — всегда последний, никогда не перезаписывается
+        combo.addItem("Свой формат...", "custom")
+
+        # Если текущий формат не среди пресетов — добавляем его отдельным
+        # пунктом ПЕРЕД триггером
         if current_format:
-            idx = -1
+            found_idx = -1
             for i in range(combo.count()):
                 if combo.itemData(i) == current_format:
-                    idx = i
+                    found_idx = i
                     break
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
+            if found_idx >= 0:
+                combo.setCurrentIndex(found_idx)
             else:
-                combo.setCurrentText("Свой формат...")
-                combo.setItemData(combo.count()-1, current_format)
+                insert_at = combo.count() - 1
+                label = current_format if len(current_format) <= 25 else current_format[:22] + "..."
+                combo.insertItem(insert_at, label, current_format)
+                combo.setCurrentIndex(insert_at)
 
-        combo.currentIndexChanged.connect(lambda idx, it=item, cb=combo: self.on_format_changed(it, cb))
+        combo.currentIndexChanged.connect(
+            lambda idx, it=item, cb=combo: self.on_format_changed(it, cb)
+        )
         self.tree.setItemWidget(item, 3, combo)
 
     def on_format_changed(self, item, combo):
-        key = item.data(0, Qt.UserRole)
-        field_type = self.get_stored_type(key) if key else "text"
-        if combo.currentData() == "custom":
-            if field_type == "date":
-                hint = "Введите строку форматирования для даты\nПримеры: %d.%m.%Y, %d %B %Y"
-            else:
-                hint = "Введите строку форматирования для числа\nПримеры: {:.2f}, {:,.2f} ₽, {:.0f}"
-            custom, ok = QInputDialog.getText(self, "Свой формат", hint)
-            if ok and custom.strip():
-                combo.setItemData(combo.currentIndex(), custom)
-                combo.setItemText(combo.currentIndex(), custom[:25] + "..." if len(custom) > 25 else custom)
-            else:
-                combo.setCurrentIndex(0)
+        type_widget = self.tree.itemWidget(item, 2)
+        field_type = type_widget.currentText() if type_widget else "text"
+
+        if combo.currentData() != "custom":
+            return
+
+        if field_type == "date":
+            hint = "Введите строку форматирования для даты\nПримеры: %d.%m.%Y, %d %B %Y"
         else:
-            fmt = combo.currentData()
-            if field_type == "date" and fmt and isinstance(fmt, str) and ('%B' in fmt or '%b' in fmt):
-                import locale
-                try:
-                    locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
-                except:
-                    QMessageBox.warning(self, "Предупреждение",
-                                        "Выбран формат даты с названием месяца, но русская локаль не установлена.\n"
-                                        "Названия месяцев могут не отображаться. Рекомендуется использовать цифровой формат.")
+            hint = "Введите строку форматирования для числа\nПримеры: {:.2f}, {:,.2f} ₽, {:.0f}"
+
+        custom, ok = QInputDialog.getText(self, "Свой формат", hint)
+        if not (ok and custom.strip()):
+            # Юзер отменил — возвращаемся к первому пресету
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+            return
+
+        custom = custom.strip()
+
+        # Ищем, нет ли уже такого формата в списке (кроме триггера)
+        existing_idx = -1
+        for i in range(combo.count() - 1):  # последний — триггер "Свой формат..."
+            if combo.itemData(i) == custom:
+                existing_idx = i
+                break
+
+        combo.blockSignals(True)
+        if existing_idx >= 0:
+            combo.setCurrentIndex(existing_idx)
+        else:
+            insert_at = combo.count() - 1
+            label = custom if len(custom) <= 25 else custom[:22] + "..."
+            combo.insertItem(insert_at, label, custom)
+            combo.setCurrentIndex(insert_at)
+        combo.blockSignals(False)
 
     # ---------- Категории ----------
     def load_categories(self):

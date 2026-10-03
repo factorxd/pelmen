@@ -14,6 +14,7 @@ def resource_path(relative_path):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')
     app.setWindowIcon(QIcon(resource_path("icons/pelmen2.ico")))
     window = MainWindow()
     window.show()

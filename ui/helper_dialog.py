@@ -3,7 +3,8 @@ import re
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTabWidget, QWidget, QFormLayout,
     QLineEdit, QPushButton, QListWidget, QHBoxLayout, QGroupBox,
-    QMessageBox, QTextEdit, QCheckBox, QComboBox, QLabel, QFrame
+    QMessageBox, QTextEdit, QCheckBox, QComboBox, QLabel, QFrame,
+    QScrollArea
 )
 from PySide6.QtCore import Qt
 from utils.clipboard import copy_to_clipboard
@@ -14,24 +15,29 @@ class HelperDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Помощник разметки")
         self.setSizeGripEnabled(True)
+        self.setMinimumSize(500, 400)
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
 
-        # Вкладка простых полей
+        def _wrap(widget):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setWidget(widget)
+            return scroll
+
         self.simple_tab = QWidget()
         self.setup_simple_tab()
-        tabs.addTab(self.simple_tab, "Простые поля")
+        tabs.addTab(_wrap(self.simple_tab), "Простые поля")
 
-        # Вкладка повторяющихся блоков
         self.block_tab = QWidget()
         self.setup_block_tab()
-        tabs.addTab(self.block_tab, "Повторяющиеся блоки")
+        tabs.addTab(_wrap(self.block_tab), "Повторяющиеся блоки")
 
-        # Вкладка условных блоков (расширенная)
         self.cond_tab = QWidget()
         self.setup_conditional_tab()
-        tabs.addTab(self.cond_tab, "Условные блоки")
+        tabs.addTab(_wrap(self.cond_tab), "Условные блоки")
 
         layout.addWidget(tabs)
 
@@ -249,7 +255,7 @@ class HelperDialog(QDialog):
         val_edit.setPlaceholderText("значение")
         text_edit = QTextEdit()
         text_edit.setPlaceholderText("Текст для этого elif...")
-        text_edit.setMaximumHeight(60)
+        text_edit.setMinimumHeight(50)
         remove_btn = QPushButton("✖")
         remove_btn.setFixedWidth(30)
 
